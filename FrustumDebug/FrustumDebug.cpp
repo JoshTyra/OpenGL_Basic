@@ -258,7 +258,7 @@ void renderScene(GLFWwindow* window) {
 }
 
 // Define a variable for blur spread
-float blurSpread = 3.5f; // Adjust this value as needed
+float blurSpread = 2.5f; // Adjust this value as needed
 
 // Inside the render function, before the blur pass
 void render(GLFWwindow* window) {
@@ -281,7 +281,7 @@ void render(GLFWwindow* window) {
 
     // 3. Blur bright areas (Gaussian blur)
     bool horizontal = true, first_iteration = true;
-    unsigned int amount = 10;
+    unsigned int amount = 20;
     glUseProgram(blurShaderProgram);
     float weights[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
     glUniform1fv(glGetUniformLocation(blurShaderProgram, "weight"), 5, weights);
@@ -302,7 +302,7 @@ void render(GLFWwindow* window) {
     // 4. Render final quad with scene and bloom
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glUseProgram(finalCombineShaderProgram);
-    glUniform1f(glGetUniformLocation(finalCombineShaderProgram, "bloomIntensity"), 1.5f);
+    glUniform1f(glGetUniformLocation(finalCombineShaderProgram, "bloomIntensity"), 0.9f);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, colorBuffers[0]);
@@ -346,8 +346,8 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
 }
 
 void initializeCubes() {
-    int gridSize = 10;
-    float spacing = 2.0f;
+    int gridSize = 20;
+    float spacing = 5.0f;
 
     for (int i = -gridSize; i <= gridSize; i++) {
         for (int j = -gridSize; j <= gridSize; j++) {
