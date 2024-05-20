@@ -146,7 +146,7 @@ void initializeOpenGL(GLFWwindow* window) {
     initializeShaders();
     initializeCubes();
 
-    // Set up the framebuffer for HDR rendering
+    // HDR framebuffer setup
     glGenFramebuffers(1, &hdrFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
 
@@ -154,11 +154,11 @@ void initializeOpenGL(GLFWwindow* window) {
     glGenTextures(2, colorBuffers);
     for (unsigned int i = 0; i < 2; i++) {
         glBindTexture(GL_TEXTURE_2D, colorBuffers[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, WIDTH, HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL); // Switch between GL_RGBA16F and GL_RGBA32F
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, WIDTH, HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); // Ensure clamping to edge
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE); // Ensure clamping to edge
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, colorBuffers[i], 0);
     }
 
@@ -175,15 +175,17 @@ void initializeOpenGL(GLFWwindow* window) {
         std::cerr << "Framebuffer not complete!" << std::endl;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // Set up ping-pong framebuffers for blurring
+    // Ping-pong framebuffers for blurring
     glGenFramebuffers(2, pingpongFBO);
     glGenTextures(2, pingpongColorbuffers);
     for (unsigned int i = 0; i < 2; i++) {
         glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[i]);
         glBindTexture(GL_TEXTURE_2D, pingpongColorbuffers[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, WIDTH, HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL); // Switch between GL_RGBA16F and GL_RGBA32F
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, WIDTH, HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); // Ensure clamping to edge
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE); // Ensure clamping to edge
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pingpongColorbuffers[i], 0);
 
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
@@ -255,6 +257,10 @@ void renderScene(GLFWwindow* window) {
     glfwSetWindowTitle(window, windowTitle.c_str());
 }
 
+// Define a variable for blur spread
+float blurSpread = 3.5f; // Adjust this value as needed
+
+// Inside the render function, before the blur pass
 void render(GLFWwindow* window) {
     // 1. Render scene into floating point framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
@@ -266,26 +272,26 @@ void render(GLFWwindow* window) {
     glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[0]);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glUseProgram(brightPassShaderProgram);
-    glUniform1f(glGetUniformLocation(brightPassShaderProgram, "brightnessThreshold"), 0.3f); // Adjust the threshold value as needed
+    glUniform1f(glGetUniformLocation(brightPassShaderProgram, "brightnessThreshold"), 0.3f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, colorBuffers[0]);
-    glUniform1i(glGetUniformLocation(brightPassShaderProgram, "screenTexture"), 0); // Ensure the correct texture unit is set
+    glUniform1i(glGetUniformLocation(brightPassShaderProgram, "hdrBuffer"), 0);
     renderQuad();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // 3. Blur bright areas (Gaussian blur)
     bool horizontal = true, first_iteration = true;
-    unsigned int amount = 30;
+    unsigned int amount = 10;
     glUseProgram(blurShaderProgram);
+    float weights[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
+    glUniform1fv(glGetUniformLocation(blurShaderProgram, "weight"), 5, weights);
+    glUniform1f(glGetUniformLocation(blurShaderProgram, "blurSpread"), blurSpread); // Set blur spread
 
-    float blurSize = 5.0f; // Adjust this value to control the blur spread
     for (unsigned int i = 0; i < amount; i++) {
         glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[horizontal]);
-        glUniform1i(glGetUniformLocation(blurShaderProgram, "isHorizontalPass"), horizontal);
-        glUniform1f(glGetUniformLocation(blurShaderProgram, "blurSize"), blurSize);
+        glUniform1i(glGetUniformLocation(blurShaderProgram, "horizontal"), horizontal);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, first_iteration ? pingpongColorbuffers[0] : pingpongColorbuffers[!horizontal]);
-        glUniform1i(glGetUniformLocation(blurShaderProgram, "sceneTexture"), 0); // Ensure the correct texture unit is set
         renderQuad();
         horizontal = !horizontal;
         if (first_iteration)
@@ -296,21 +302,16 @@ void render(GLFWwindow* window) {
     // 4. Render final quad with scene and bloom
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glUseProgram(finalCombineShaderProgram);
+    glUniform1f(glGetUniformLocation(finalCombineShaderProgram, "bloomIntensity"), 1.5f);
 
-    // Set bloom intensity
-    glUniform1f(glGetUniformLocation(finalCombineShaderProgram, "bloomIntensity"), 1.5f); // Adjust the bloom intensity as needed
-
-    // Bind the scene texture to texture unit 0
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, colorBuffers[0]);
     glUniform1i(glGetUniformLocation(finalCombineShaderProgram, "scene"), 0);
 
-    // Bind the bloom texture to texture unit 1
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, pingpongColorbuffers[!horizontal]);
     glUniform1i(glGetUniformLocation(finalCombineShaderProgram, "bloomBlur"), 1);
 
-    // Render the final quad
     renderQuad();
 }
 
@@ -530,27 +531,20 @@ void initializeShaders() {
     )";
 
     const char* brightPassFragmentShaderSource = R"(
-    #version 430 core
+    #version 330 core
+    out vec4 FragColor;
+    in vec2 TexCoords;
 
-    layout (location = 0) in vec2 TexCoords;
-    layout (location = 0) out vec4 FragColor;
-
-    layout (binding = 0) uniform sampler2D screenTexture;
+    uniform sampler2D hdrBuffer;
     uniform float brightnessThreshold;
 
     void main() {
-        vec3 sceneColor = texture(screenTexture, TexCoords).rgb;
-        // Threshold each color channel
-        vec3 brightColor = max(sceneColor - brightnessThreshold, 0.0);
-
-        // Boost the color if any channel is above the threshold
-        // This helps maintain the intensity of the color in the bloom effect
-        float maxChannel = max(max(brightColor.r, brightColor.g), brightColor.b);
-        if (maxChannel > 0) {
-            brightColor = sceneColor * (maxChannel / (maxChannel + brightnessThreshold));
-        }
-
-        FragColor = vec4(brightColor, 1.0);
+        vec3 hdrColor = texture(hdrBuffer, TexCoords).rgb;
+        float brightness = dot(hdrColor, vec3(0.2126, 0.7152, 0.0722)); // Luminance calculation
+        if (brightness > brightnessThreshold)
+            FragColor = vec4(hdrColor, 1.0);
+        else
+            FragColor = vec4(0.0, 0.0, 0.0, 1.0);
     }
     )";
 
@@ -575,32 +569,27 @@ void initializeShaders() {
     )";
 
     const char* blurFragmentShaderSource = R"(
-    #version 430 core
+    #version 330 core
+    out vec4 FragColor;
+    in vec2 TexCoords;
 
-    layout (location = 0) in vec2 TexCoords;
-    layout (location = 0) out vec4 FragColor;
-
-    layout (binding = 0) uniform sampler2D sceneTexture;
-    uniform float blurSize;
-    uniform bool isHorizontalPass; // Control the pass direction
-
-    const float weight[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+    uniform sampler2D image;
+    uniform bool horizontal;
+    uniform float weight[5];
+    uniform float blurSpread; // New uniform to control blur spread
 
     void main() {
-        vec2 texOffset = 1.0 / textureSize(sceneTexture, 0); // Size of one texel
-        vec3 result = texture(sceneTexture, TexCoords).rgb * weight[0]; // Central sample
-
-        for (int i = 1; i <= 4; ++i) {
-            vec2 offset = texOffset * float(i) * blurSize;
-            if (isHorizontalPass) {
-                result += texture(sceneTexture, TexCoords + vec2(offset.x, 0.0)).rgb * weight[i];
-                result += texture(sceneTexture, TexCoords - vec2(offset.x, 0.0)).rgb * weight[i];
+        vec2 tex_offset = blurSpread / textureSize(image, 0); // Adjust based on blurSpread
+        vec3 result = texture(image, TexCoords).rgb * weight[0]; // current fragment's contribution
+        for (int i = 1; i < 5; ++i) {
+            if (horizontal) {
+                result += texture(image, TexCoords + vec2(tex_offset.x * i, 0.0)).rgb * weight[i];
+                result += texture(image, TexCoords - vec2(tex_offset.x * i, 0.0)).rgb * weight[i];
             } else {
-                result += texture(sceneTexture, TexCoords + vec2(0.0, offset.y)).rgb * weight[i];
-                result += texture(sceneTexture, TexCoords - vec2(0.0, offset.y)).rgb * weight[i];
+                result += texture(image, TexCoords + vec2(0.0, tex_offset.y * i)).rgb * weight[i];
+                result += texture(image, TexCoords - vec2(0.0, tex_offset.y * i)).rgb * weight[i];
             }
         }
-
         FragColor = vec4(result, 1.0);
     }
     )";
