@@ -24,12 +24,18 @@
     <ClCompile Include="Camera.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\GameEngine\GameEngine\io\FileSystemUtils.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\GameEngine\GameEngine\rendering\Frustum.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Camera.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\GameEngine\GameEngine\FileSystemUtils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

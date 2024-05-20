@@ -9,6 +9,11 @@
 #include <random>
 #include "Rendering/Frustum.h"
 #include "Camera.h"
+#include "FileSystemUtils.h"
+
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
 
 // Constants and global variables
 const int WIDTH = 2560;
@@ -30,9 +35,31 @@ struct Cube {
     glm::vec3 color; // Add a color field
 };
 
+struct Vertex {
+    glm::vec3 Position;
+    glm::vec3 Normal;
+};
+
+struct AABB {
+    glm::vec3 min;
+    glm::vec3 max;
+};
+
+struct Mesh {
+    unsigned int VAO, VBO, EBO;
+    std::vector<unsigned int> indices;
+};
+
 std::vector<Cube> cubes;
 unsigned int VAO, VBO;
 unsigned int shaderProgram;
+
+const glm::vec3 staticNodeRotationAxis(1.0f, 0.0f, 0.0f);
+const float staticNodeRotationAngle = glm::radians(-90.0f);
+
+std::vector<Vertex> aggregatedVertices; // Global vector to hold all vertices of the model
+std::vector<Mesh> loadedMeshes;
+AABB loadedModelAABB;
 
 void initializeOpenGL(GLFWwindow* window);
 void render(GLFWwindow* window);
@@ -41,17 +68,21 @@ void mouseCallback(GLFWwindow* window, double xpos, double ypos);
 void framebufferSizeCallback(GLFWwindow* window, int width, int height);
 void initializeCubes();
 void initializeShaders();
-void drawFrustum(const Frustum& frustum);
+void loadModel(const std::string& path);
+void processNode(aiNode* node, const aiScene* scene);
+void processMesh(aiMesh* mesh, const aiScene* scene);
+void storeMesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices);
+AABB computeAABB(const std::vector<Vertex>& vertices);
+AABB transformAABB(const AABB& aabb, const glm::mat4& transform);
 
 int main() {
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GL_TRUE);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_DEPTH_BITS, 32); // Request a 32-bit depth buffer
     glfwWindowHint(GLFW_SAMPLES, 4); // Enable 4x multisampling
-    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Frustum Debug", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Frustum Culling", nullptr, nullptr);
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable VSync to cap frame rate to monitor's refresh rate
     glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
@@ -61,6 +92,9 @@ int main() {
     glewInit();
 
     initializeOpenGL(window);
+
+    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/masterchief_no_lods.fbx");
+    loadModel(staticModelPath);
 
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = static_cast<float>(glfwGetTime());
@@ -91,31 +125,12 @@ float randomFloat() {
     return distribution(engine);
 }
 
-unsigned int frustumVAO, frustumVBO;
-void initializeFrustumBuffers() {
-    glGenVertexArrays(1, &frustumVAO);
-    glGenBuffers(1, &frustumVBO);
-
-    glBindVertexArray(frustumVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, frustumVBO);
-
-    // Assuming we have 24 vertices (12 lines with 2 points each) for the frustum
-    glBufferData(GL_ARRAY_BUFFER, 24 * 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
-
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindVertexArray(0);
-}
-
 void initializeOpenGL(GLFWwindow* window) {
     glViewport(0, 0, WIDTH, HEIGHT);
     glEnable(GL_DEPTH_TEST);
 
     initializeShaders();
     initializeCubes();
-    initializeFrustumBuffers();
 }
 
 void render(GLFWwindow* window) {
@@ -125,9 +140,6 @@ void render(GLFWwindow* window) {
     viewMatrix = camera.getViewMatrix();
 
     frustum.update(viewMatrix, projectionMatrix);
-    frustum.printFrustumDetails(viewMatrix * projectionMatrix);
-
-    drawFrustum(frustum);
 
     glUseProgram(shaderProgram);
     unsigned int modelLoc = glGetUniformLocation(shaderProgram, "model");
@@ -155,7 +167,29 @@ void render(GLFWwindow* window) {
         }
     }
 
-    std::string windowTitle = "Frustum Debug - Object Count: " + std::to_string(visibleObjectCount);
+    // Compute the transformed AABB
+    glm::mat4 modelMatrix = glm::mat4(1.0f);
+    modelMatrix = glm::rotate(modelMatrix, staticNodeRotationAngle, staticNodeRotationAxis); // Apply rotation
+    modelMatrix = glm::scale(modelMatrix, glm::vec3(0.025f)); // Apply scaling
+
+    AABB transformedAABB = transformAABB(loadedModelAABB, modelMatrix);
+
+    // Render loaded model meshes
+    if (frustum.isAABBInFrustum(transformedAABB.min, transformedAABB.max)) {
+        visibleObjectCount++;
+
+        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(modelMatrix));
+        glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(viewMatrix));
+        glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
+        glUniform3f(colorLoc, 1.0f, 1.0f, 1.0f); // Set model color to white
+
+        for (const auto& mesh : loadedMeshes) {
+            glBindVertexArray(mesh.VAO);
+            glDrawElements(GL_TRIANGLES, mesh.indices.size(), GL_UNSIGNED_INT, 0);
+        }
+    }
+
+    std::string windowTitle = "Frustum Culling - Object Count: " + std::to_string(visibleObjectCount);
     glfwSetWindowTitle(window, windowTitle.c_str());
 }
 
@@ -259,8 +293,6 @@ void initializeCubes() {
     glEnableVertexAttribArray(0);
 }
 
-unsigned int frustumShaderProgram;
-
 void initializeShaders() {
     // Cube shader
     const char* cubeVertexShaderSource = R"(
@@ -299,83 +331,138 @@ void initializeShaders() {
 
     glDeleteShader(cubeVertexShader);
     glDeleteShader(cubeFragmentShader);
-
-    // Frustum shader
-    const char* frustumVertexShaderSource = R"(
-    #version 330 core
-    layout(location = 0) in vec3 aPos;
-    uniform mat4 view;
-    uniform mat4 projection;
-    void main() {
-        gl_Position = projection * view * vec4(aPos, 1.0);
-    }
-    )";
-
-    const char* frustumFragmentShaderSource = R"(
-    #version 330 core
-    out vec4 FragColor;
-    void main() {
-        FragColor = vec4(1.0, 1.0, 0.0, 1.0); // Yellow color
-    }
-    )";
-
-    // Compile and link frustum shader
-    unsigned int frustumVertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(frustumVertexShader, 1, &frustumVertexShaderSource, NULL);
-    glCompileShader(frustumVertexShader);
-
-    unsigned int frustumFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(frustumFragmentShader, 1, &frustumFragmentShaderSource, NULL);
-    glCompileShader(frustumFragmentShader);
-
-    frustumShaderProgram = glCreateProgram();
-    glAttachShader(frustumShaderProgram, frustumVertexShader);
-    glAttachShader(frustumShaderProgram, frustumFragmentShader);
-    glLinkProgram(frustumShaderProgram);
-
-    glDeleteShader(frustumVertexShader);
-    glDeleteShader(frustumFragmentShader);
 }
 
-void drawFrustum(const Frustum& frustum) {
-    std::vector<float> frustumVertices = {
-        // Near plane
-        frustum.corners[0].x, frustum.corners[0].y, frustum.corners[0].z, frustum.corners[1].x, frustum.corners[1].y, frustum.corners[1].z,
-        frustum.corners[1].x, frustum.corners[1].y, frustum.corners[1].z, frustum.corners[3].x, frustum.corners[3].y, frustum.corners[3].z,
-        frustum.corners[3].x, frustum.corners[3].y, frustum.corners[3].z, frustum.corners[2].x, frustum.corners[2].y, frustum.corners[2].z,
-        frustum.corners[2].x, frustum.corners[2].y, frustum.corners[2].z, frustum.corners[0].x, frustum.corners[0].y, frustum.corners[0].z,
+// Function to load a model using AssImp
+void loadModel(const std::string& path) {
+    Assimp::Importer importer;
+    const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs);
 
-        // Far plane
-        frustum.corners[4].x, frustum.corners[4].y, frustum.corners[4].z, frustum.corners[5].x, frustum.corners[5].y, frustum.corners[5].z,
-        frustum.corners[5].x, frustum.corners[5].y, frustum.corners[5].z, frustum.corners[7].x, frustum.corners[7].y, frustum.corners[7].z,
-        frustum.corners[7].x, frustum.corners[7].y, frustum.corners[7].z, frustum.corners[6].x, frustum.corners[6].y, frustum.corners[6].z,
-        frustum.corners[6].x, frustum.corners[6].y, frustum.corners[6].z, frustum.corners[4].x, frustum.corners[4].y, frustum.corners[4].z,
+    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
+        std::cerr << "ERROR::ASSIMP:: " << importer.GetErrorString() << std::endl;
+        return;
+    }
 
-        // Connect near and far planes
-        frustum.corners[0].x, frustum.corners[0].y, frustum.corners[0].z, frustum.corners[4].x, frustum.corners[4].y, frustum.corners[4].z,
-        frustum.corners[1].x, frustum.corners[1].y, frustum.corners[1].z, frustum.corners[5].x, frustum.corners[5].y, frustum.corners[5].z,
-        frustum.corners[2].x, frustum.corners[2].y, frustum.corners[2].z, frustum.corners[6].x, frustum.corners[6].y, frustum.corners[6].z,
-        frustum.corners[3].x, frustum.corners[3].y, frustum.corners[3].z, frustum.corners[7].x, frustum.corners[7].y, frustum.corners[7].z
+    // Clear aggregated vertices before loading a new model
+    aggregatedVertices.clear();
+
+    // Process the root node recursively
+    processNode(scene->mRootNode, scene);
+
+    // Compute a single AABB for the entire model
+    loadedModelAABB = computeAABB(aggregatedVertices);
+}
+
+void storeMesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices) {
+    Mesh mesh;
+
+    glGenVertexArrays(1, &mesh.VAO);
+    glGenBuffers(1, &mesh.VBO);
+    glGenBuffers(1, &mesh.EBO);
+
+    glBindVertexArray(mesh.VAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, mesh.VBO);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
+
+    // Vertex Positions
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Position));
+    glEnableVertexAttribArray(0);
+    // Vertex Normals
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
+    glEnableVertexAttribArray(1);
+
+    glBindVertexArray(0);
+
+    mesh.indices = indices;
+    loadedMeshes.push_back(mesh);
+}
+
+void processNode(aiNode* node, const aiScene* scene) {
+    for (unsigned int i = 0; i < node->mNumMeshes; i++) {
+        aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
+        processMesh(mesh, scene);
+    }
+
+    for (unsigned int i = 0; i < node->mNumChildren; i++) {
+        processNode(node->mChildren[i], scene);
+    }
+}
+
+void processMesh(aiMesh* mesh, const aiScene* scene) {
+    std::vector<Vertex> vertices;
+    std::vector<unsigned int> indices;
+
+    for (unsigned int i = 0; i < mesh->mNumVertices; i++) {
+        Vertex vertex;
+        glm::vec3 vector;
+
+        // Process vertex positions
+        vector.x = mesh->mVertices[i].x;
+        vector.y = mesh->mVertices[i].y;
+        vector.z = mesh->mVertices[i].z;
+        vertex.Position = vector;
+
+        // Process vertex normals
+        vector.x = mesh->mNormals[i].x;
+        vector.y = mesh->mNormals[i].y;
+        vector.z = mesh->mNormals[i].z;
+        vertex.Normal = vector;
+
+        vertices.push_back(vertex);
+    }
+
+    for (unsigned int i = 0; i < mesh->mNumFaces; i++) {
+        aiFace face = mesh->mFaces[i];
+        for (unsigned int j = 0; j < face.mNumIndices; j++) {
+            indices.push_back(face.mIndices[j]);
+        }
+    }
+
+    // Add vertices to the global aggregated vertices
+    aggregatedVertices.insert(aggregatedVertices.end(), vertices.begin(), vertices.end());
+
+    // Store the mesh data
+    storeMesh(vertices, indices);
+}
+
+// Function to compute AABB
+AABB computeAABB(const std::vector<Vertex>& vertices) {
+    glm::vec3 min = vertices[0].Position;
+    glm::vec3 max = vertices[0].Position;
+
+    for (const auto& vertex : vertices) {
+        min = glm::min(min, vertex.Position);
+        max = glm::max(max, vertex.Position);
+    }
+
+    return { min, max };
+}
+
+// Function to transform AABB
+AABB transformAABB(const AABB& aabb, const glm::mat4& transform) {
+    glm::vec3 corners[8] = {
+        aabb.min,
+        glm::vec3(aabb.min.x, aabb.min.y, aabb.max.z),
+        glm::vec3(aabb.min.x, aabb.max.y, aabb.min.z),
+        glm::vec3(aabb.min.x, aabb.max.y, aabb.max.z),
+        glm::vec3(aabb.max.x, aabb.min.y, aabb.min.z),
+        glm::vec3(aabb.max.x, aabb.min.y, aabb.max.z),
+        glm::vec3(aabb.max.x, aabb.max.y, aabb.min.z),
+        aabb.max
     };
 
-    glBindBuffer(GL_ARRAY_BUFFER, frustumVBO);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, frustumVertices.size() * sizeof(float), frustumVertices.data());
+    glm::vec3 newMin = transform * glm::vec4(corners[0], 1.0f);
+    glm::vec3 newMax = newMin;
 
-    glUseProgram(frustumShaderProgram);
+    for (int i = 1; i < 8; ++i) {
+        glm::vec3 transformedCorner = transform * glm::vec4(corners[i], 1.0f);
+        newMin = glm::min(newMin, transformedCorner);
+        newMax = glm::max(newMax, transformedCorner);
+    }
 
-    unsigned int viewLoc = glGetUniformLocation(frustumShaderProgram, "view");
-    unsigned int projectionLoc = glGetUniformLocation(frustumShaderProgram, "projection");
-    glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(viewMatrix));
-    glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
-
-    glBindVertexArray(frustumVAO);
-    glDrawArrays(GL_LINES, 0, 24);
-    glBindVertexArray(0);
+    return { newMin, newMax };
 }
-
-
-
-
-
-
-

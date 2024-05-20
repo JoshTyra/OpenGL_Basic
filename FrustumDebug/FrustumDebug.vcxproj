@@ -71,8 +71,8 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>C:\Users\JT\Desktop\glfw-3.3.8.bin.WIN64\include;C:\Users\JT\Desktop\glew-2.1.0\include;C:\Users\JT\Desktop\glm-master;C:\Users\JT\source\repos\GameEngine\GameEngine;$(IncludePath)</IncludePath>
-    <LibraryPath>C:\Users\JT\Desktop\glfw-3.3.8.bin.WIN64\lib-vc2022;C:\Users\JT\Desktop\glew-2.1.0\lib\Release\x64;$(LibraryPath)</LibraryPath>
+    <IncludePath>C:\Users\JT\Desktop\glfw-3.3.8.bin.WIN64\include;C:\Users\JT\Desktop\glew-2.1.0\include;C:\Users\JT\Desktop\glm-master;C:\Users\JT\source\repos\GameEngine\GameEngine;C:\Users\JT\Desktop\assimp-master\debug-build\include;C:\Users\JT\Desktop\assimp-master\include;$(IncludePath)</IncludePath>
+    <LibraryPath>C:\Users\JT\Desktop\glfw-3.3.8.bin.WIN64\lib-vc2022;C:\Users\JT\Desktop\glew-2.1.0\lib\Release\x64;C:\Users\JT\Desktop\assimp-master\debug-build\lib\Debug;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -112,11 +112,13 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>glew32.lib;glfw3.lib;glew32s.lib;opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>glew32.lib;glfw3.lib;glew32s.lib;opengl32.lib;assimp-vc143-mtd.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>xcopy /y "C:\Users\JT\Desktop\glfw-3.3.8.bin.WIN64\lib-vc2022\glfw3.dll" "$(OutDir)"
-xcopy /y "C:\Users\JT\Desktop\glew-2.1.0\bin\Release\x64\glew32.dll" "$(OutDir)"</Command>
+xcopy /y "C:\Users\JT\Desktop\glew-2.1.0\bin\Release\x64\glew32.dll" "$(OutDir)"
+copy /Y "C:\Users\JT\Desktop\assimp-master\debug-build\bin\Debug\assimp-vc143-mtd.dll" "$(OutDir)"
+</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -136,11 +138,13 @@ xcopy /y "C:\Users\JT\Desktop\glew-2.1.0\bin\Release\x64\glew32.dll" "$(OutDir)"
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\GameEngine\GameEngine\io\FileSystemUtils.cpp" />
     <ClCompile Include="..\..\GameEngine\GameEngine\rendering\Frustum.cpp" />
     <ClCompile Include="Camera.cpp" />
     <ClCompile Include="FrustumDebug.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\GameEngine\GameEngine\FileSystemUtils.h" />
     <ClInclude Include="..\..\GameEngine\GameEngine\rendering\Frustum.h" />
     <ClInclude Include="Camera.h" />
   </ItemGroup>
