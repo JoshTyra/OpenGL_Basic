@@ -58,6 +58,9 @@ unsigned int VAO, VBO;
 unsigned int shaderProgram;
 unsigned int characterShaderProgram;
 unsigned int characterTexture;
+unsigned int brightPassShaderProgram;
+unsigned int blurShaderProgram;
+unsigned int finalCombineShaderProgram;
 
 const glm::vec3 staticNodeRotationAxis(1.0f, 0.0f, 0.0f);
 const float staticNodeRotationAngle = glm::radians(-90.0f);
@@ -65,6 +68,12 @@ const float staticNodeRotationAngle = glm::radians(-90.0f);
 std::vector<Vertex> aggregatedVertices; // Global vector to hold all vertices of the model
 std::vector<Mesh> loadedMeshes;
 AABB loadedModelAABB;
+
+unsigned int hdrFBO;
+unsigned int colorBuffers[2];
+unsigned int rboDepth;
+unsigned int pingpongFBO[2];
+unsigned int pingpongColorbuffers[2];
 
 void initializeOpenGL(GLFWwindow* window);
 void render(GLFWwindow* window);
@@ -81,6 +90,9 @@ AABB computeAABB(const std::vector<Vertex>& vertices);
 AABB transformAABB(const AABB& aabb, const glm::mat4& transform);
 unsigned int loadTexture(const char* path);
 float randomFloat();
+unsigned int compileShader(unsigned int type, const char* source);
+unsigned int createShaderProgram(unsigned int vertexShader, unsigned int fragmentShader);
+void renderQuad();
 
 int main() {
     glfwInit();
@@ -133,11 +145,53 @@ void initializeOpenGL(GLFWwindow* window) {
 
     initializeShaders();
     initializeCubes();
+
+    // Set up the framebuffer for HDR rendering
+    glGenFramebuffers(1, &hdrFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
+
+    // Create two floating point color buffers (1 for normal rendering, other for brightness threshold values)
+    glGenTextures(2, colorBuffers);
+    for (unsigned int i = 0; i < 2; i++) {
+        glBindTexture(GL_TEXTURE_2D, colorBuffers[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, WIDTH, HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, colorBuffers[i], 0);
+    }
+
+    // Create and attach depth buffer (renderbuffer)
+    glGenRenderbuffers(1, &rboDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, WIDTH, HEIGHT);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rboDepth);
+
+    unsigned int attachments[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+    glDrawBuffers(2, attachments);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cerr << "Framebuffer not complete!" << std::endl;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // Set up ping-pong framebuffers for blurring
+    glGenFramebuffers(2, pingpongFBO);
+    glGenTextures(2, pingpongColorbuffers);
+    for (unsigned int i = 0; i < 2; i++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[i]);
+        glBindTexture(GL_TEXTURE_2D, pingpongColorbuffers[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, WIDTH, HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pingpongColorbuffers[i], 0);
+
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            std::cerr << "Ping-pong framebuffer not complete!" << std::endl;
+    }
 }
 
-void render(GLFWwindow* window) {
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
+void renderScene(GLFWwindow* window) {
     projectionMatrix = camera.getProjectionMatrix(static_cast<float>(WIDTH) / static_cast<float>(HEIGHT));
     viewMatrix = camera.getViewMatrix();
 
@@ -183,7 +237,7 @@ void render(GLFWwindow* window) {
     glUniformMatrix4fv(viewLocChar, 1, GL_FALSE, glm::value_ptr(viewMatrix));
     glUniformMatrix4fv(projectionLocChar, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, characterTexture); // characterTexture is the texture ID loaded earlier
+    glBindTexture(GL_TEXTURE_2D, characterTexture);
     glUniform1i(textureLoc, 0);
 
     glm::mat4 modelMatrix = glm::mat4(1.0f);
@@ -199,6 +253,65 @@ void render(GLFWwindow* window) {
 
     std::string windowTitle = "Frustum Culling - Object Count: " + std::to_string(visibleObjectCount);
     glfwSetWindowTitle(window, windowTitle.c_str());
+}
+
+void render(GLFWwindow* window) {
+    // 1. Render scene into floating point framebuffer
+    glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    renderScene(window);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // 2. Extract bright areas
+    glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[0]);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glUseProgram(brightPassShaderProgram);
+    glUniform1f(glGetUniformLocation(brightPassShaderProgram, "brightnessThreshold"), 0.3f); // Adjust the threshold value as needed
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, colorBuffers[0]);
+    glUniform1i(glGetUniformLocation(brightPassShaderProgram, "screenTexture"), 0); // Ensure the correct texture unit is set
+    renderQuad();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // 3. Blur bright areas (Gaussian blur)
+    bool horizontal = true, first_iteration = true;
+    unsigned int amount = 30;
+    glUseProgram(blurShaderProgram);
+
+    float blurSize = 5.0f; // Adjust this value to control the blur spread
+    for (unsigned int i = 0; i < amount; i++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[horizontal]);
+        glUniform1i(glGetUniformLocation(blurShaderProgram, "isHorizontalPass"), horizontal);
+        glUniform1f(glGetUniformLocation(blurShaderProgram, "blurSize"), blurSize);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, first_iteration ? pingpongColorbuffers[0] : pingpongColorbuffers[!horizontal]);
+        glUniform1i(glGetUniformLocation(blurShaderProgram, "sceneTexture"), 0); // Ensure the correct texture unit is set
+        renderQuad();
+        horizontal = !horizontal;
+        if (first_iteration)
+            first_iteration = false;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // 4. Render final quad with scene and bloom
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glUseProgram(finalCombineShaderProgram);
+
+    // Set bloom intensity
+    glUniform1f(glGetUniformLocation(finalCombineShaderProgram, "bloomIntensity"), 1.5f); // Adjust the bloom intensity as needed
+
+    // Bind the scene texture to texture unit 0
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, colorBuffers[0]);
+    glUniform1i(glGetUniformLocation(finalCombineShaderProgram, "scene"), 0);
+
+    // Bind the bloom texture to texture unit 1
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, pingpongColorbuffers[!horizontal]);
+    glUniform1i(glGetUniformLocation(finalCombineShaderProgram, "bloomBlur"), 1);
+
+    // Render the final quad
+    renderQuad();
 }
 
 void processInput(GLFWwindow* window) {
@@ -232,7 +345,7 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
 }
 
 void initializeCubes() {
-    int gridSize = 5;
+    int gridSize = 10;
     float spacing = 2.0f;
 
     for (int i = -gridSize; i <= gridSize; i++) {
@@ -401,6 +514,170 @@ void initializeShaders() {
 
     glDeleteShader(characterVertexShader);
     glDeleteShader(characterFragmentShader);
+
+    // Bright pass shader
+    const char* brightPassVertexShaderSource = R"(
+    #version 330 core
+    layout (location = 0) in vec2 aPos;
+    layout (location = 1) in vec2 aTexCoords;
+
+    out vec2 TexCoords;
+
+    void main() {
+        TexCoords = aTexCoords;
+        gl_Position = vec4(aPos, 0.0, 1.0);
+    }
+    )";
+
+    const char* brightPassFragmentShaderSource = R"(
+    #version 430 core
+
+    layout (location = 0) in vec2 TexCoords;
+    layout (location = 0) out vec4 FragColor;
+
+    layout (binding = 0) uniform sampler2D screenTexture;
+    uniform float brightnessThreshold;
+
+    void main() {
+        vec3 sceneColor = texture(screenTexture, TexCoords).rgb;
+        // Threshold each color channel
+        vec3 brightColor = max(sceneColor - brightnessThreshold, 0.0);
+
+        // Boost the color if any channel is above the threshold
+        // This helps maintain the intensity of the color in the bloom effect
+        float maxChannel = max(max(brightColor.r, brightColor.g), brightColor.b);
+        if (maxChannel > 0) {
+            brightColor = sceneColor * (maxChannel / (maxChannel + brightnessThreshold));
+        }
+
+        FragColor = vec4(brightColor, 1.0);
+    }
+    )";
+
+    unsigned int brightPassVertexShader = compileShader(GL_VERTEX_SHADER, brightPassVertexShaderSource);
+    unsigned int brightPassFragmentShader = compileShader(GL_FRAGMENT_SHADER, brightPassFragmentShaderSource);
+    brightPassShaderProgram = createShaderProgram(brightPassVertexShader, brightPassFragmentShader);
+    glDeleteShader(brightPassVertexShader);
+    glDeleteShader(brightPassFragmentShader);
+
+    // Blur shader
+    const char* blurVertexShaderSource = R"(
+    #version 330 core
+    layout (location = 0) in vec2 aPos;
+    layout (location = 1) in vec2 aTexCoords;
+
+    out vec2 TexCoords;
+
+    void main() {
+        TexCoords = aTexCoords;
+        gl_Position = vec4(aPos, 0.0, 1.0);
+    }
+    )";
+
+    const char* blurFragmentShaderSource = R"(
+    #version 430 core
+
+    layout (location = 0) in vec2 TexCoords;
+    layout (location = 0) out vec4 FragColor;
+
+    layout (binding = 0) uniform sampler2D sceneTexture;
+    uniform float blurSize;
+    uniform bool isHorizontalPass; // Control the pass direction
+
+    const float weight[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+
+    void main() {
+        vec2 texOffset = 1.0 / textureSize(sceneTexture, 0); // Size of one texel
+        vec3 result = texture(sceneTexture, TexCoords).rgb * weight[0]; // Central sample
+
+        for (int i = 1; i <= 4; ++i) {
+            vec2 offset = texOffset * float(i) * blurSize;
+            if (isHorizontalPass) {
+                result += texture(sceneTexture, TexCoords + vec2(offset.x, 0.0)).rgb * weight[i];
+                result += texture(sceneTexture, TexCoords - vec2(offset.x, 0.0)).rgb * weight[i];
+            } else {
+                result += texture(sceneTexture, TexCoords + vec2(0.0, offset.y)).rgb * weight[i];
+                result += texture(sceneTexture, TexCoords - vec2(0.0, offset.y)).rgb * weight[i];
+            }
+        }
+
+        FragColor = vec4(result, 1.0);
+    }
+    )";
+
+    unsigned int blurVertexShader = compileShader(GL_VERTEX_SHADER, blurVertexShaderSource);
+    unsigned int blurFragmentShader = compileShader(GL_FRAGMENT_SHADER, blurFragmentShaderSource);
+    blurShaderProgram = createShaderProgram(blurVertexShader, blurFragmentShader);
+    glDeleteShader(blurVertexShader);
+    glDeleteShader(blurFragmentShader);
+
+    // Final combine shader
+    const char* finalCombineVertexShaderSource = R"(
+    #version 330 core
+    layout (location = 0) in vec2 aPos;
+    layout (location = 1) in vec2 aTexCoords;
+
+    out vec2 TexCoords;
+
+    void main() {
+        TexCoords = aTexCoords;
+        gl_Position = vec4(aPos, 0.0, 1.0);
+    }
+    )";
+
+    const char* finalCombineFragmentShaderSource = R"(
+    #version 430 core
+    out vec4 FragColor;
+
+    in vec2 TexCoords;
+
+    uniform sampler2D scene;
+    uniform sampler2D bloomBlur;
+    uniform float bloomIntensity; // Add bloom intensity uniform
+
+    void main() {
+        vec3 hdrColor = texture(scene, TexCoords).rgb;
+        vec3 bloomColor = texture(bloomBlur, TexCoords).rgb;
+        FragColor = vec4(hdrColor + bloomIntensity * bloomColor, 1.0); // Additive blending
+    }
+    )";
+
+    unsigned int finalCombineVertexShader = compileShader(GL_VERTEX_SHADER, finalCombineVertexShaderSource);
+    unsigned int finalCombineFragmentShader = compileShader(GL_FRAGMENT_SHADER, finalCombineFragmentShaderSource);
+    finalCombineShaderProgram = createShaderProgram(finalCombineVertexShader, finalCombineFragmentShader);
+    glDeleteShader(finalCombineVertexShader);
+    glDeleteShader(finalCombineFragmentShader);
+}
+
+unsigned int compileShader(unsigned int type, const char* source) {
+    unsigned int shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+
+    int success;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetShaderInfoLog(shader, 512, nullptr, infoLog);
+        std::cerr << "ERROR::SHADER::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
+    return shader;
+}
+
+unsigned int createShaderProgram(unsigned int vertexShader, unsigned int fragmentShader) {
+    unsigned int program = glCreateProgram();
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
+    glLinkProgram(program);
+
+    int success;
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetProgramInfoLog(program, 512, nullptr, infoLog);
+        std::cerr << "ERROR::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
+    }
+    return program;
 }
 
 unsigned int loadTexture(const char* path) {
@@ -580,4 +857,33 @@ float randomFloat() {
     static std::default_random_engine engine(static_cast<unsigned int>(time(0)));
     static std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
     return distribution(engine);
+}
+
+void renderQuad() {
+    static unsigned int quadVAO = 0;
+    static unsigned int quadVBO;
+    if (quadVAO == 0) {
+        float quadVertices[] = {
+            // positions        // texture Coords
+            -1.0f,  1.0f, 0.0f,  0.0f, 1.0f,
+            -1.0f, -1.0f, 0.0f,  0.0f, 0.0f,
+             1.0f, -1.0f, 0.0f,  1.0f, 0.0f,
+
+            -1.0f,  1.0f, 0.0f,  0.0f, 1.0f,
+             1.0f, -1.0f, 0.0f,  1.0f, 0.0f,
+             1.0f,  1.0f, 0.0f,  1.0f, 1.0f
+        };
+        glGenVertexArrays(1, &quadVAO);
+        glGenBuffers(1, &quadVBO);
+        glBindVertexArray(quadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    }
+    glBindVertexArray(quadVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
 }
