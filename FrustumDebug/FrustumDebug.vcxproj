@@ -71,7 +71,7 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>C:\Users\JT\Desktop\glfw-3.3.8.bin.WIN64\include;C:\Users\JT\Desktop\glew-2.1.0\include;C:\Users\JT\Desktop\glm-master;C:\Users\JT\source\repos\GameEngine\GameEngine;C:\Users\JT\Desktop\assimp-master\debug-build\include;C:\Users\JT\Desktop\assimp-master\include;$(IncludePath)</IncludePath>
+    <IncludePath>C:\Users\JT\Desktop\glfw-3.3.8.bin.WIN64\include;C:\Users\JT\Desktop\glew-2.1.0\include;C:\Users\JT\Desktop\glm-master;C:\Users\JT\source\repos\GameEngine\GameEngine;C:\Users\JT\Desktop\assimp-master\debug-build\include;C:\Users\JT\Desktop\assimp-master\include;C:\Users\JT\Desktop\stb-master;$(IncludePath)</IncludePath>
     <LibraryPath>C:\Users\JT\Desktop\glfw-3.3.8.bin.WIN64\lib-vc2022;C:\Users\JT\Desktop\glew-2.1.0\lib\Release\x64;C:\Users\JT\Desktop\assimp-master\debug-build\lib\Debug;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">

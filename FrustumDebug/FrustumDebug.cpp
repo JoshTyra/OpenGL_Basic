@@ -1,3 +1,6 @@
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 // Include necessary headers
 #include <iostream>
 #include <GL/glew.h>
@@ -10,7 +13,6 @@
 #include "Rendering/Frustum.h"
 #include "Camera.h"
 #include "FileSystemUtils.h"
-
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
@@ -32,12 +34,13 @@ glm::mat4 viewMatrix;
 struct Cube {
     glm::vec3 position;
     float size;
-    glm::vec3 color; // Add a color field
+    glm::vec3 color;
+    glm::vec2 gridPosition; // Add grid position
 };
 
 struct Vertex {
     glm::vec3 Position;
-    glm::vec3 Normal;
+    glm::vec2 TexCoord; // Add texture coordinates
 };
 
 struct AABB {
@@ -53,6 +56,8 @@ struct Mesh {
 std::vector<Cube> cubes;
 unsigned int VAO, VBO;
 unsigned int shaderProgram;
+unsigned int characterShaderProgram;
+unsigned int characterTexture;
 
 const glm::vec3 staticNodeRotationAxis(1.0f, 0.0f, 0.0f);
 const float staticNodeRotationAngle = glm::radians(-90.0f);
@@ -74,6 +79,8 @@ void processMesh(aiMesh* mesh, const aiScene* scene);
 void storeMesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices);
 AABB computeAABB(const std::vector<Vertex>& vertices);
 AABB transformAABB(const AABB& aabb, const glm::mat4& transform);
+unsigned int loadTexture(const char* path);
+float randomFloat();
 
 int main() {
     glfwInit();
@@ -95,6 +102,8 @@ int main() {
 
     std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/masterchief_no_lods.fbx");
     loadModel(staticModelPath);
+
+    characterTexture = loadTexture(FileSystemUtils::getAssetFilePath("textures/masterchief_D.tga").c_str());
 
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = static_cast<float>(glfwGetTime());
@@ -118,13 +127,6 @@ int main() {
     return 0;
 }
 
-// Function to generate a random float between 0.0 and 1.0
-float randomFloat() {
-    static std::default_random_engine engine(static_cast<unsigned int>(time(0)));
-    static std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
-    return distribution(engine);
-}
-
 void initializeOpenGL(GLFWwindow* window) {
     glViewport(0, 0, WIDTH, HEIGHT);
     glEnable(GL_DEPTH_TEST);
@@ -141,13 +143,16 @@ void render(GLFWwindow* window) {
 
     frustum.update(viewMatrix, projectionMatrix);
 
+    // Render static cubes
     glUseProgram(shaderProgram);
     unsigned int modelLoc = glGetUniformLocation(shaderProgram, "model");
     unsigned int viewLoc = glGetUniformLocation(shaderProgram, "view");
     unsigned int projectionLoc = glGetUniformLocation(shaderProgram, "projection");
-    unsigned int colorLoc = glGetUniformLocation(shaderProgram, "cubeColor");
+    unsigned int timeLoc = glGetUniformLocation(shaderProgram, "time");
+    unsigned int gridPositionLoc = glGetUniformLocation(shaderProgram, "gridPosition");
 
     int visibleObjectCount = 0;
+    float currentTime = static_cast<float>(glfwGetTime());
 
     for (const Cube& cube : cubes) {
         if (frustum.isSphereInFrustum(cube.position, cube.size)) {
@@ -160,33 +165,36 @@ void render(GLFWwindow* window) {
             glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
             glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(viewMatrix));
             glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
-            glUniform3fv(colorLoc, 1, glm::value_ptr(cube.color));
+            glUniform1f(timeLoc, currentTime);
+            glUniform2fv(gridPositionLoc, 1, glm::value_ptr(cube.gridPosition));
 
             glBindVertexArray(VAO);
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
     }
 
-    // Compute the transformed AABB
+    // Render character model
+    glUseProgram(characterShaderProgram);
+    unsigned int modelLocChar = glGetUniformLocation(characterShaderProgram, "model");
+    unsigned int viewLocChar = glGetUniformLocation(characterShaderProgram, "view");
+    unsigned int projectionLocChar = glGetUniformLocation(characterShaderProgram, "projection");
+    unsigned int textureLoc = glGetUniformLocation(characterShaderProgram, "texture_diffuse");
+
+    glUniformMatrix4fv(viewLocChar, 1, GL_FALSE, glm::value_ptr(viewMatrix));
+    glUniformMatrix4fv(projectionLocChar, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, characterTexture); // characterTexture is the texture ID loaded earlier
+    glUniform1i(textureLoc, 0);
+
     glm::mat4 modelMatrix = glm::mat4(1.0f);
-    modelMatrix = glm::rotate(modelMatrix, staticNodeRotationAngle, staticNodeRotationAxis); // Apply rotation
-    modelMatrix = glm::scale(modelMatrix, glm::vec3(0.025f)); // Apply scaling
+    modelMatrix = glm::rotate(modelMatrix, staticNodeRotationAngle, staticNodeRotationAxis);
+    modelMatrix = glm::scale(modelMatrix, glm::vec3(0.025f));
 
-    AABB transformedAABB = transformAABB(loadedModelAABB, modelMatrix);
+    glUniformMatrix4fv(modelLocChar, 1, GL_FALSE, glm::value_ptr(modelMatrix));
 
-    // Render loaded model meshes
-    if (frustum.isAABBInFrustum(transformedAABB.min, transformedAABB.max)) {
-        visibleObjectCount++;
-
-        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(modelMatrix));
-        glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(viewMatrix));
-        glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
-        glUniform3f(colorLoc, 1.0f, 1.0f, 1.0f); // Set model color to white
-
-        for (const auto& mesh : loadedMeshes) {
-            glBindVertexArray(mesh.VAO);
-            glDrawElements(GL_TRIANGLES, mesh.indices.size(), GL_UNSIGNED_INT, 0);
-        }
+    for (const auto& mesh : loadedMeshes) {
+        glBindVertexArray(mesh.VAO);
+        glDrawElements(GL_TRIANGLES, mesh.indices.size(), GL_UNSIGNED_INT, 0);
     }
 
     std::string windowTitle = "Frustum Culling - Object Count: " + std::to_string(visibleObjectCount);
@@ -224,15 +232,16 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
 }
 
 void initializeCubes() {
-    int gridSize = 1;
-    float spacing = 5.0f;
+    int gridSize = 5;
+    float spacing = 2.0f;
 
     for (int i = -gridSize; i <= gridSize; i++) {
         for (int j = -gridSize; j <= gridSize; j++) {
             Cube cube;
             cube.position = glm::vec3(i * spacing, 0.0f, j * spacing);
             cube.size = 1.0f;
-            cube.color = glm::vec3(randomFloat(), randomFloat(), randomFloat()); // Assign random color
+            cube.color = glm::vec3(1.0f, 1.0f, 1.0f); // Color is not used now, but we keep it for future use
+            cube.gridPosition = glm::vec2(i + gridSize, j + gridSize); // Set grid position
             cubes.push_back(cube);
         }
     }
@@ -301,17 +310,36 @@ void initializeShaders() {
     uniform mat4 model;
     uniform mat4 view;
     uniform mat4 projection;
+    uniform float time;
+    uniform vec2 gridPosition;
+
     void main() {
-        gl_Position = projection * view * model * vec4(aPos, 1.0);
+        float frequency = 2.0;
+        float phaseShift = (gridPosition.x + gridPosition.y) * 0.5;
+        float verticalDisplacement = sin(time * frequency + phaseShift) * 0.5;
+        vec3 newPos = aPos + vec3(0.0, verticalDisplacement, 0.0);
+        gl_Position = projection * view * model * vec4(newPos, 1.0);
     }
     )";
 
     const char* cubeFragmentShaderSource = R"(
     #version 330 core
     out vec4 FragColor;
-    uniform vec3 cubeColor;
+
+    uniform float time;
+    uniform vec2 gridPosition;
+
     void main() {
-        FragColor = vec4(cubeColor, 1.0);
+        float frequency = 2.0;
+        float phaseShift = (gridPosition.x + gridPosition.y) * 0.5;
+        float t = time * frequency + phaseShift;
+        
+        vec3 color;
+        color.r = sin(t) * 0.5 + 0.5; // Red channel oscillates with sine wave
+        color.g = sin(t + 2.0 * 3.14159 / 3.0) * 0.5 + 0.5; // Green channel shifted by 2?/3
+        color.b = sin(t + 4.0 * 3.14159 / 3.0) * 0.5 + 0.5; // Blue channel shifted by 4?/3
+
+        FragColor = vec4(color, 1.0);
     }
     )";
 
@@ -331,9 +359,84 @@ void initializeShaders() {
 
     glDeleteShader(cubeVertexShader);
     glDeleteShader(cubeFragmentShader);
+
+    // Character shader
+    const char* characterVertexShaderSource = R"(
+    #version 330 core
+    layout(location = 0) in vec3 aPos;
+    layout(location = 1) in vec2 aTexCoord;
+    out vec2 TexCoord;
+    uniform mat4 model;
+    uniform mat4 view;
+    uniform mat4 projection;
+    void main() {
+        gl_Position = projection * view * model * vec4(aPos, 1.0);
+        TexCoord = aTexCoord;
+    }
+    )";
+
+    const char* characterFragmentShaderSource = R"(
+    #version 330 core
+    out vec4 FragColor;
+    in vec2 TexCoord;
+    uniform sampler2D texture_diffuse;
+    void main() {
+        FragColor = texture(texture_diffuse, TexCoord);
+    }
+    )";
+
+    // Compile and link character shader
+    unsigned int characterVertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(characterVertexShader, 1, &characterVertexShaderSource, NULL);
+    glCompileShader(characterVertexShader);
+
+    unsigned int characterFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(characterFragmentShader, 1, &characterFragmentShaderSource, NULL);
+    glCompileShader(characterFragmentShader);
+
+    characterShaderProgram = glCreateProgram();
+    glAttachShader(characterShaderProgram, characterVertexShader);
+    glAttachShader(characterShaderProgram, characterFragmentShader);
+    glLinkProgram(characterShaderProgram);
+
+    glDeleteShader(characterVertexShader);
+    glDeleteShader(characterFragmentShader);
 }
 
-// Function to load a model using AssImp
+unsigned int loadTexture(const char* path) {
+    unsigned int textureID;
+    glGenTextures(1, &textureID);
+
+    int width, height, nrComponents;
+    unsigned char* data = stbi_load(path, &width, &height, &nrComponents, 0);
+    if (data) {
+        GLenum format;
+        if (nrComponents == 1)
+            format = GL_RED;
+        else if (nrComponents == 3)
+            format = GL_RGB;
+        else if (nrComponents == 4)
+            format = GL_RGBA;
+
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        stbi_image_free(data);
+    }
+    else {
+        std::cerr << "Texture failed to load at path: " << path << std::endl;
+        stbi_image_free(data);
+    }
+
+    return textureID;
+}
+
 void loadModel(const std::string& path) {
     Assimp::Importer importer;
     const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs);
@@ -371,8 +474,8 @@ void storeMesh(const std::vector<Vertex>& vertices, const std::vector<unsigned i
     // Vertex Positions
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Position));
     glEnableVertexAttribArray(0);
-    // Vertex Normals
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
+    // Vertex Texture Coords
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoord));
     glEnableVertexAttribArray(1);
 
     glBindVertexArray(0);
@@ -406,11 +509,16 @@ void processMesh(aiMesh* mesh, const aiScene* scene) {
         vector.z = mesh->mVertices[i].z;
         vertex.Position = vector;
 
-        // Process vertex normals
-        vector.x = mesh->mNormals[i].x;
-        vector.y = mesh->mNormals[i].y;
-        vector.z = mesh->mNormals[i].z;
-        vertex.Normal = vector;
+        // Process vertex texture coordinates
+        if (mesh->mTextureCoords[0]) {
+            glm::vec2 vec;
+            vec.x = mesh->mTextureCoords[0][i].x;
+            vec.y = mesh->mTextureCoords[0][i].y;
+            vertex.TexCoord = vec;
+        }
+        else {
+            vertex.TexCoord = glm::vec2(0.0f, 0.0f);
+        }
 
         vertices.push_back(vertex);
     }
@@ -465,4 +573,11 @@ AABB transformAABB(const AABB& aabb, const glm::mat4& transform) {
     }
 
     return { newMin, newMax };
+}
+
+// Function to generate a random float between 0.0 and 1.0
+float randomFloat() {
+    static std::default_random_engine engine(static_cast<unsigned int>(time(0)));
+    static std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
+    return distribution(engine);
 }
