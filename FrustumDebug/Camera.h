@@ -23,9 +23,8 @@ public:
     void processKeyboardInput(int direction, float deltaTime);
     void processMouseMovement(float xoffset, float yoffset, bool constrainPitch = true);
     void processMouseScroll(float yoffset);
+    glm::vec3 getPosition() const;
 
 private:
     void updateCameraVectors();
 };
-
-

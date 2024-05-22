@@ -16,6 +16,8 @@
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
+#include <random>
+#include <chrono>
 
 // Constants and global variables
 const int WIDTH = 2560;
@@ -35,12 +37,15 @@ struct Cube {
     glm::vec3 position;
     float size;
     glm::vec3 color;
-    glm::vec2 gridPosition; // Add grid position
+    glm::vec2 gridPosition;
 };
 
 struct Vertex {
     glm::vec3 Position;
-    glm::vec2 TexCoord; // Add texture coordinates
+    glm::vec2 TexCoord;
+    glm::vec3 Normal;
+    glm::vec3 Tangent;
+    glm::vec3 Bitangent;
 };
 
 struct AABB {
@@ -58,12 +63,16 @@ unsigned int VAO, VBO;
 unsigned int shaderProgram;
 unsigned int characterShaderProgram;
 unsigned int characterTexture;
+unsigned int characterNormalMap;
+unsigned int cubemapTexture;
+unsigned int characterMaskTexture;
 unsigned int brightPassShaderProgram;
 unsigned int blurShaderProgram;
 unsigned int finalCombineShaderProgram;
 
 const glm::vec3 staticNodeRotationAxis(1.0f, 0.0f, 0.0f);
 const float staticNodeRotationAngle = glm::radians(-90.0f);
+float characterRotationSpeed = 0.5f; // Adjust the rotation speed as desired
 
 std::vector<Vertex> aggregatedVertices; // Global vector to hold all vertices of the model
 std::vector<Mesh> loadedMeshes;
@@ -94,6 +103,61 @@ unsigned int compileShader(unsigned int type, const char* source);
 unsigned int createShaderProgram(unsigned int vertexShader, unsigned int fragmentShader);
 void renderQuad();
 
+unsigned int loadCubemap(std::vector<std::string> faces) {
+    unsigned int textureID;
+    glGenTextures(1, &textureID);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
+
+    int width, height, nrChannels;
+    for (unsigned int i = 0; i < faces.size(); i++) {
+        unsigned char* data = stbi_load(faces[i].c_str(), &width, &height, &nrChannels, 0);
+        if (data) {
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
+                0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+            stbi_image_free(data);
+        }
+        else {
+            std::cerr << "Cubemap texture failed to load at path: " << faces[i] << std::endl;
+            stbi_image_free(data);
+        }
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+    return textureID;
+}
+
+glm::vec3 hexToRGB(const std::string& hex) {
+    int r = std::stoi(hex.substr(1, 2), nullptr, 16);
+    int g = std::stoi(hex.substr(3, 2), nullptr, 16);
+    int b = std::stoi(hex.substr(5, 2), nullptr, 16);
+    return glm::vec3(r / 255.0f, g / 255.0f, b / 255.0f);
+}
+
+std::vector<std::string> colorCodes = {
+    "#C13E3E", // Multiplayer Red
+    "#3639C9", // Multiplayer Blue
+    "#C9BA36", // Multiplayer Gold/Yellow
+    "#208A20", // Multiplayer Green
+    "#B53C8A", // Multiplayer Purple
+    "#DF9735", // Multiplayer Orange
+    "#744821", // Multiplayer Brown
+    "#EB7EC5", // Multiplayer Pink
+    "#D2D2D2", // Multiplayer White
+    "#758550", // Campaign Color Lighter
+    "#55613A"  // Campaign Color Darker
+};
+
+glm::vec3 getRandomColor() {
+    static std::random_device rd;
+    static std::mt19937 engine(rd());
+    static std::uniform_int_distribution<int> distribution(0, colorCodes.size() - 1);
+    return hexToRGB(colorCodes[distribution(engine)]);
+}
+
 int main() {
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -110,12 +174,27 @@ int main() {
 
     glewInit();
 
+    std::vector<std::string> faces{
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/armor_right.tga"),
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/armor_left.tga"),
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/armor_top.tga"),
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/armor_down.tga"),
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/armor_front.tga"),
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/armor_back.tga")
+    };
+
+    cubemapTexture = loadCubemap(faces);
+
     initializeOpenGL(window);
 
-    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/masterchief_no_lods.fbx");
-    //loadModel(staticModelPath);
+    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/masterchief.fbx");
+    loadModel(staticModelPath);
 
     characterTexture = loadTexture(FileSystemUtils::getAssetFilePath("textures/masterchief_D.tga").c_str());
+
+    characterNormalMap = loadTexture(FileSystemUtils::getAssetFilePath("textures/masterchief_bump.tga").c_str());
+
+    characterMaskTexture = loadTexture(FileSystemUtils::getAssetFilePath("textures/masterchief_cc.tga").c_str());
 
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = static_cast<float>(glfwGetTime());
@@ -145,6 +224,10 @@ void initializeOpenGL(GLFWwindow* window) {
 
     initializeShaders();
     initializeCubes();
+
+    glm::vec3 randomColor = getRandomColor();
+    glUseProgram(characterShaderProgram);
+    glUniform3fv(glGetUniformLocation(characterShaderProgram, "changeColor"), 1, glm::value_ptr(randomColor));
 
     // HDR framebuffer setup
     glGenFramebuffers(1, &hdrFBO);
@@ -229,12 +312,34 @@ void renderScene(GLFWwindow* window) {
         }
     }
 
-    // Render character model
+    // Render character model with normal mapping and cubemap reflection
     glUseProgram(characterShaderProgram);
+
+    // Render character model with normal mapping and cubemap reflection
+    glUseProgram(characterShaderProgram);
+
+    glm::vec3 lightDir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f)); // Directional light direction
+    glm::vec3 viewPos = camera.getPosition();
+    glm::vec3 ambientColor = glm::vec3(0.3f, 0.3f, 0.3f);
+    glm::vec3 diffuseColor = glm::vec3(1.0f, 1.0f, 1.0f);
+    glm::vec3 specularColor = glm::vec3(0.3f, 0.3f, 0.3f);
+    float shininess = 32.0f;
+    float lightIntensity = 1.25f; // Set your desired light intensity here
+
+    glUniform3fv(glGetUniformLocation(characterShaderProgram, "lightDir"), 1, glm::value_ptr(lightDir));
+    glUniform3fv(glGetUniformLocation(characterShaderProgram, "viewPos"), 1, glm::value_ptr(viewPos));
+    glUniform3fv(glGetUniformLocation(characterShaderProgram, "ambientColor"), 1, glm::value_ptr(ambientColor));
+    glUniform3fv(glGetUniformLocation(characterShaderProgram, "diffuseColor"), 1, glm::value_ptr(diffuseColor));
+    glUniform3fv(glGetUniformLocation(characterShaderProgram, "specularColor"), 1, glm::value_ptr(specularColor));
+    glUniform1f(glGetUniformLocation(characterShaderProgram, "shininess"), shininess);
+    glUniform1f(glGetUniformLocation(characterShaderProgram, "lightIntensity"), lightIntensity); // Add this line
+
     unsigned int modelLocChar = glGetUniformLocation(characterShaderProgram, "model");
     unsigned int viewLocChar = glGetUniformLocation(characterShaderProgram, "view");
     unsigned int projectionLocChar = glGetUniformLocation(characterShaderProgram, "projection");
     unsigned int textureLoc = glGetUniformLocation(characterShaderProgram, "texture_diffuse");
+    unsigned int normalMapLoc = glGetUniformLocation(characterShaderProgram, "texture_normal");
+    unsigned int cubemapLoc = glGetUniformLocation(characterShaderProgram, "cubemap");
 
     glUniformMatrix4fv(viewLocChar, 1, GL_FALSE, glm::value_ptr(viewMatrix));
     glUniformMatrix4fv(projectionLocChar, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
@@ -242,8 +347,21 @@ void renderScene(GLFWwindow* window) {
     glBindTexture(GL_TEXTURE_2D, characterTexture);
     glUniform1i(textureLoc, 0);
 
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, characterNormalMap);
+    glUniform1i(normalMapLoc, 1);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
+    glUniform1i(cubemapLoc, 2);
+
+    glActiveTexture(GL_TEXTURE2); // Assuming TEXTURE0 is diffuse, TEXTURE1 is normal
+    glBindTexture(GL_TEXTURE_2D, characterMaskTexture);
+    glUniform1i(glGetUniformLocation(characterShaderProgram, "texture_mask"), 2);
+
     glm::mat4 modelMatrix = glm::mat4(1.0f);
     modelMatrix = glm::rotate(modelMatrix, staticNodeRotationAngle, staticNodeRotationAxis);
+    modelMatrix = glm::rotate(modelMatrix, (float)glfwGetTime() * characterRotationSpeed, glm::vec3(0.0f, 0.0f, 1.0f)); // Rotate around the Y-axis
     modelMatrix = glm::scale(modelMatrix, glm::vec3(0.025f));
 
     glUniformMatrix4fv(modelLocChar, 1, GL_FALSE, glm::value_ptr(modelMatrix));
@@ -258,10 +376,11 @@ void renderScene(GLFWwindow* window) {
 }
 
 // Define a variable for blur spread
-float blurSpread = 2.5f; // Adjust this value as needed
+float blurSpread = 3.5f; // Adjust this value as needed
 
 // Inside the render function, before the blur pass
 void render(GLFWwindow* window) {
+
     // 1. Render scene into floating point framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -346,7 +465,7 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
 }
 
 void initializeCubes() {
-    int gridSize = 20;
+    int gridSize = 50;
     float spacing = 5.0f;
 
     for (int i = -gridSize; i <= gridSize; i++) {
@@ -474,29 +593,180 @@ void initializeShaders() {
     glDeleteShader(cubeVertexShader);
     glDeleteShader(cubeFragmentShader);
 
-    // Character shader
     const char* characterVertexShaderSource = R"(
-    #version 330 core
-    layout(location = 0) in vec3 aPos;
-    layout(location = 1) in vec2 aTexCoord;
-    out vec2 TexCoord;
-    uniform mat4 model;
-    uniform mat4 view;
-    uniform mat4 projection;
-    void main() {
-        gl_Position = projection * view * model * vec4(aPos, 1.0);
-        TexCoord = aTexCoord;
-    }
-    )";
+        #version 330 core
 
-    const char* characterFragmentShaderSource = R"(
-    #version 330 core
-    out vec4 FragColor;
-    in vec2 TexCoord;
-    uniform sampler2D texture_diffuse;
-    void main() {
-        FragColor = texture(texture_diffuse, TexCoord);
-    }
+        layout(location = 0) in vec3 aPos;
+        layout(location = 1) in vec2 aTexCoord;
+        layout(location = 2) in vec3 aNormal;
+        layout(location = 3) in vec3 aTangent;
+        layout(location = 4) in vec3 aBitangent;
+
+        out vec2 TexCoord;
+        out vec3 FragPos;
+        out vec3 TangentLightDir;
+        out vec3 TangentViewPos;
+        out vec3 TangentFragPos;
+        out vec3 ReflectDir;
+
+        uniform mat4 model;
+        uniform mat4 view;
+        uniform mat4 projection;
+
+        uniform vec3 lightDir;
+        uniform vec3 viewPos;
+
+        void main() {
+            gl_Position = projection * view * model * vec4(aPos, 1.0);
+            FragPos = vec3(model * vec4(aPos, 1.0));
+            TexCoord = aTexCoord;
+
+            mat3 normalMatrix = transpose(inverse(mat3(model)));
+            vec3 T = normalize(normalMatrix * aTangent);
+            vec3 N = normalize(normalMatrix * aNormal);
+            T = normalize(T - dot(T, N) * N);
+            vec3 B = cross(N, T);
+
+            mat3 TBN = transpose(mat3(T, B, N));    
+            TangentLightDir = TBN * lightDir;
+            TangentViewPos  = TBN * viewPos;
+            TangentFragPos  = TBN * FragPos;
+
+            // Calculate reflection vector
+            vec3 I = normalize(viewPos - FragPos);
+            ReflectDir = reflect(I, N);
+        }
+        )";
+
+    //const char* characterFragmentShaderSource = R"(
+    //    #version 330 core
+
+    //    out vec4 FragColor;
+
+    //    in vec2 TexCoord;
+    //    in vec3 TangentLightDir;
+    //    in vec3 TangentViewPos;
+    //    in vec3 TangentFragPos;
+    //    in vec3 ReflectDir;
+
+    //    uniform vec3 ambientColor;
+    //    uniform vec3 diffuseColor;
+    //    uniform vec3 specularColor;
+    //    uniform float shininess;
+    //    uniform sampler2D texture_diffuse;
+    //    uniform sampler2D texture_normal;
+    //    uniform sampler2D texture_mask;
+    //    uniform samplerCube cubemap;
+    //    uniform float lightIntensity; // Add this line
+
+    //    void main() {
+    //        vec3 normal = texture(texture_normal, TexCoord).rgb;
+    //        normal = normal * 2.0f - 1.0f;
+    //        normal.y = -normal.y;
+    //        normal = normalize(normal);
+
+    //        vec4 diffuseTexture = texture(texture_diffuse, TexCoord);
+    //        vec3 diffuseTexColor = diffuseTexture.rgb;
+    //        float specularMask = diffuseTexture.a;
+
+    //        vec3 maskValue = texture(texture_mask, TexCoord).rgb;
+    //        vec3 changeColor = vec3(0.4588235294117647f, 0.5215686274509804f, 0.3137254901960784f);
+    //        vec3 blendedColor = mix(diffuseTexColor, diffuseTexColor * changeColor, maskValue);
+
+    //        vec3 ambient = ambientColor * blendedColor;
+
+    //        vec3 lightDir = normalize(TangentLightDir);
+    //        float diff = max(dot(normal, lightDir), 0.0);
+    //        vec3 diffuse = diffuseColor * diff * blendedColor * lightIntensity; // Multiply by lightIntensity
+
+    //        vec3 viewDir = normalize(TangentViewPos - TangentFragPos);
+    //        vec3 halfwayDir = normalize(lightDir + viewDir);
+    //        float spec = pow(max(dot(normal, halfwayDir), 0.0), shininess);
+    //        vec3 specular = specularColor * spec * specularMask * lightIntensity; // Multiply by lightIntensity
+
+    //        float fresnelBias = 0.1;
+    //        float fresnelScale = 0.5;
+    //        float fresnelPower = 0.5;
+    //        vec3 I = normalize(TangentFragPos - TangentViewPos);
+    //        float fresnel = fresnelBias + fresnelScale * pow(1.0 - dot(I, normal), fresnelPower);
+    //        specular *= fresnel;
+
+    //        vec3 color = ambient + diffuse + specular;
+    //        vec3 reflectedColor = texture(cubemap, ReflectDir).rgb;
+    //        reflectedColor *= specularMask;
+    //        color = mix(color, reflectedColor, 0.2);
+
+    //        FragColor = vec4(color, 1.0);
+    //    }
+    //    )";
+
+        const char* characterFragmentShaderSource = R"(
+        #version 330 core
+
+        out vec4 FragColor;
+
+        in vec2 TexCoord;
+        in vec3 TangentLightDir;
+        in vec3 TangentViewPos;
+        in vec3 TangentFragPos;
+        in vec3 ReflectDir;
+
+        uniform vec3 ambientColor;
+        uniform vec3 diffuseColor;
+        uniform vec3 specularColor;
+        uniform float shininess;
+
+        uniform sampler2D texture_diffuse;
+        uniform sampler2D texture_normal;
+        uniform sampler2D texture_mask;
+        uniform samplerCube cubemap;
+        uniform float lightIntensity;
+        uniform vec3 changeColor;
+
+        void main() {
+            vec3 normal = texture(texture_normal, TexCoord).rgb;
+            normal = normal * 2.0f - 1.0f;
+            normal.y = -normal.y;
+            normal = normalize(normal * 1.25f);  // Apply bump strength
+
+            vec4 diffuseTexture = texture(texture_diffuse, TexCoord);
+            vec3 diffuseTexColor = diffuseTexture.rgb;
+            float alphaValue = diffuseTexture.a;
+            float blendFactor = 0.3f;
+
+            vec3 maskValue = texture(texture_mask, TexCoord).rgb;
+            vec3 blendedColor = mix(diffuseTexColor, diffuseTexColor * changeColor, maskValue);
+
+            vec3 alphaBlendedColor = mix(blendedColor, blendedColor * alphaValue, blendFactor);
+
+            float specularMask = diffuseTexture.a;
+
+            vec3 ambient = ambientColor * alphaBlendedColor;
+
+            vec3 lightDir = normalize(TangentLightDir);
+            float diff = max(dot(normal, lightDir), 0.0f) * lightIntensity;
+            vec3 diffuse = diffuseColor * diff * alphaBlendedColor;
+
+            vec3 viewDir = normalize(TangentViewPos - TangentFragPos);
+            vec3 halfwayDir = normalize(lightDir + viewDir);
+            float spec = pow(max(dot(normal, halfwayDir), 0.0), shininess) * lightIntensity;
+            vec3 specular = specularColor * spec * specularMask;
+
+            float fresnelBias = 0.1f;
+            float fresnelScale = 0.5f;
+            float fresnelPower = 0.5f;
+            vec3 I = normalize(TangentFragPos - TangentViewPos);
+            float fresnel = fresnelBias + fresnelScale * pow(1.0f - dot(I, normal), fresnelPower);
+            specular *= fresnel;
+
+            vec3 color = ambient + diffuse + specular;
+
+            vec3 reflectedColor = texture(cubemap, ReflectDir).rgb;
+            reflectedColor *= specularMask;
+            color = mix(color, reflectedColor, 0.2f);
+
+            FragColor = vec4(color, 1.0f);
+        }
     )";
 
     // Compile and link character shader
@@ -705,7 +975,7 @@ unsigned int loadTexture(const char* path) {
 
 void loadModel(const std::string& path) {
     Assimp::Importer importer;
-    const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs);
+    const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices);
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         std::cerr << "ERROR::ASSIMP:: " << importer.GetErrorString() << std::endl;
@@ -743,6 +1013,15 @@ void storeMesh(const std::vector<Vertex>& vertices, const std::vector<unsigned i
     // Vertex Texture Coords
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoord));
     glEnableVertexAttribArray(1);
+    // Vertex Normals
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
+    glEnableVertexAttribArray(2);
+    // Vertex Tangents
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Tangent));
+    glEnableVertexAttribArray(3);
+    // Vertex Bitangents
+    glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Bitangent));
+    glEnableVertexAttribArray(4);
 
     glBindVertexArray(0);
 
@@ -767,23 +1046,34 @@ void processMesh(aiMesh* mesh, const aiScene* scene) {
 
     for (unsigned int i = 0; i < mesh->mNumVertices; i++) {
         Vertex vertex;
-        glm::vec3 vector;
 
-        // Process vertex positions
-        vector.x = mesh->mVertices[i].x;
-        vector.y = mesh->mVertices[i].y;
-        vector.z = mesh->mVertices[i].z;
-        vertex.Position = vector;
+        // Extract and log position
+        vertex.Position = glm::vec3(mesh->mVertices[i].x, mesh->mVertices[i].y, mesh->mVertices[i].z);
 
-        // Process vertex texture coordinates
-        if (mesh->mTextureCoords[0]) {
-            glm::vec2 vec;
-            vec.x = mesh->mTextureCoords[0][i].x;
-            vec.y = mesh->mTextureCoords[0][i].y;
-            vertex.TexCoord = vec;
+        // Check and handle normals
+        if (mesh->HasNormals()) {
+            vertex.Normal = glm::vec3(mesh->mNormals[i].x, mesh->mNormals[i].y, mesh->mNormals[i].z);
         }
         else {
-            vertex.TexCoord = glm::vec2(0.0f, 0.0f);
+            vertex.Normal = glm::vec3(0.0f);
+        }
+
+        // Check and handle texture coordinates
+        if (mesh->mTextureCoords[0]) {
+            vertex.TexCoord = glm::vec2(mesh->mTextureCoords[0][i].x, mesh->mTextureCoords[0][i].y);
+        }
+        else {
+            vertex.TexCoord = glm::vec2(0.0f);
+        }
+
+        // Check and handle tangents and bitangents
+        if (mesh->HasTangentsAndBitangents()) {
+            vertex.Tangent = glm::vec3(mesh->mTangents[i].x, mesh->mTangents[i].y, mesh->mTangents[i].z);
+            vertex.Bitangent = glm::vec3(mesh->mBitangents[i].x, mesh->mBitangents[i].y, mesh->mBitangents[i].z);
+        }
+        else {
+            vertex.Tangent = glm::vec3(0.0f);
+            vertex.Bitangent = glm::vec3(0.0f);
         }
 
         vertices.push_back(vertex);
@@ -796,10 +1086,9 @@ void processMesh(aiMesh* mesh, const aiScene* scene) {
         }
     }
 
-    // Add vertices to the global aggregated vertices
+    // Aggregate vertices for AABB computation
     aggregatedVertices.insert(aggregatedVertices.end(), vertices.begin(), vertices.end());
 
-    // Store the mesh data
     storeMesh(vertices, indices);
 }
 

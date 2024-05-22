@@ -10,7 +10,7 @@ glm::mat4 Camera::getViewMatrix() {
 }
 
 glm::mat4 Camera::getProjectionMatrix(float aspectRatio) {
-    return glm::perspective(glm::radians(fov), aspectRatio, 0.1f, 500.0f);
+    return glm::perspective(glm::radians(fov), aspectRatio, 0.1f, 5000.0f);
 }
 
 void Camera::processKeyboardInput(int direction, float deltaTime) {
@@ -60,4 +60,8 @@ void Camera::updateCameraVectors() {
 
     right = glm::normalize(glm::cross(front, worldUp));  // Recalculate right vector
     up = glm::normalize(glm::cross(right, front));  // Recalculate up vector
+}
+
+glm::vec3 Camera::getPosition() const {
+    return position;
 }
