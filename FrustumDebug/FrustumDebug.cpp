@@ -37,8 +37,10 @@ struct Cube {
     glm::vec3 position;
     float size;
     glm::vec3 color;
-    glm::vec2 gridPosition;
 };
+
+std::vector<glm::vec3> cubePositions;
+std::vector<glm::vec2> cubeGridPositions;
 
 struct Vertex {
     glm::vec3 Position;
@@ -69,6 +71,9 @@ unsigned int characterMaskTexture;
 unsigned int brightPassShaderProgram;
 unsigned int blurShaderProgram;
 unsigned int finalCombineShaderProgram;
+
+unsigned int instanceVBO;
+unsigned int gridPositionVBO;
 
 const glm::vec3 staticNodeRotationAxis(1.0f, 0.0f, 0.0f);
 const float staticNodeRotationAngle = glm::radians(-90.0f);
@@ -282,96 +287,125 @@ void renderScene(GLFWwindow* window) {
 
     frustum.update(viewMatrix, projectionMatrix);
 
-    // Render static cubes
+    // Perform frustum culling on cubes using cubePositions and cubeGridPositions
+    std::vector<glm::vec3> visibleCubePositions;
+    std::vector<glm::vec2> visibleCubeGridPositions;
+
+    float cubeSize = 1.0f; // Adjust this value based on your cube size
+
+    for (size_t i = 0; i < cubePositions.size(); ++i) {
+        const glm::vec3& position = cubePositions[i];
+        if (frustum.isSphereInFrustum(position, cubeSize)) {
+            visibleCubePositions.push_back(position);
+            visibleCubeGridPositions.push_back(cubeGridPositions[i]);
+        }
+    }
+
+    // Update the instance buffer with visible cube positions
+    if (!visibleCubePositions.empty()) {
+        glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+        glBufferData(GL_ARRAY_BUFFER, visibleCubePositions.size() * sizeof(glm::vec3), &visibleCubePositions[0], GL_STATIC_DRAW);
+    }
+
+    // Update the grid position buffer with visible cube grid positions
+    if (!visibleCubeGridPositions.empty()) {
+        glBindBuffer(GL_ARRAY_BUFFER, gridPositionVBO);
+        glBufferData(GL_ARRAY_BUFFER, visibleCubeGridPositions.size() * sizeof(glm::vec2), &visibleCubeGridPositions[0], GL_STATIC_DRAW);
+    }
+
+    // Render visible cubes using instancing
     glUseProgram(shaderProgram);
     unsigned int modelLoc = glGetUniformLocation(shaderProgram, "model");
     unsigned int viewLoc = glGetUniformLocation(shaderProgram, "view");
     unsigned int projectionLoc = glGetUniformLocation(shaderProgram, "projection");
     unsigned int timeLoc = glGetUniformLocation(shaderProgram, "time");
-    unsigned int gridPositionLoc = glGetUniformLocation(shaderProgram, "gridPosition");
 
-    int visibleObjectCount = 0;
     float currentTime = static_cast<float>(glfwGetTime());
 
-    for (const Cube& cube : cubes) {
-        if (frustum.isSphereInFrustum(cube.position, cube.size)) {
-            visibleObjectCount++;
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::scale(model, glm::vec3(1.0f));
 
-            glm::mat4 model = glm::mat4(1.0f);
-            model = glm::translate(model, cube.position);
-            model = glm::scale(model, glm::vec3(cube.size));
+    glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(viewMatrix));
+    glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
+    glUniform1f(timeLoc, currentTime);
 
-            glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
-            glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(viewMatrix));
-            glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
-            glUniform1f(timeLoc, currentTime);
-            glUniform2fv(gridPositionLoc, 1, glm::value_ptr(cube.gridPosition));
+    glBindVertexArray(VAO);
 
-            glBindVertexArray(VAO);
-            glDrawArrays(GL_TRIANGLES, 0, 36);
+    int numVisibleCubes = visibleCubePositions.size();
+    int visibleObjectCount = numVisibleCubes; // Start with visible cubes count
+    if (numVisibleCubes > 0) {
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 36, numVisibleCubes);
+    }
+
+    // Perform frustum culling on character model
+    bool isCharacterVisible = false;
+    glm::mat4 modelMatrix = glm::mat4(1.0f);
+    modelMatrix = glm::rotate(modelMatrix, staticNodeRotationAngle, staticNodeRotationAxis);
+    modelMatrix = glm::rotate(modelMatrix, (float)glfwGetTime() * characterRotationSpeed, glm::vec3(0.0f, 0.0f, 1.0f));
+    modelMatrix = glm::scale(modelMatrix, glm::vec3(0.025f));
+
+    AABB transformedAABB = transformAABB(loadedModelAABB, modelMatrix);
+    if (frustum.isAABBInFrustum(transformedAABB.min, transformedAABB.max)) {
+        isCharacterVisible = true;
+    }
+
+    if (isCharacterVisible) {
+        visibleObjectCount++; // Increment visible object count for the character model
+
+        // Render character model with normal mapping and cubemap reflection
+        glUseProgram(characterShaderProgram);
+
+        glm::vec3 lightDir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f)); // Directional light direction
+        glm::vec3 viewPos = camera.getPosition();
+        glm::vec3 ambientColor = glm::vec3(0.3f, 0.3f, 0.3f);
+        glm::vec3 diffuseColor = glm::vec3(1.0f, 1.0f, 1.0f);
+        glm::vec3 specularColor = glm::vec3(0.3f, 0.3f, 0.3f);
+        float shininess = 32.0f;
+        float lightIntensity = 1.25f; // Set your desired light intensity here
+
+        glUniform3fv(glGetUniformLocation(characterShaderProgram, "lightDir"), 1, glm::value_ptr(lightDir));
+        glUniform3fv(glGetUniformLocation(characterShaderProgram, "viewPos"), 1, glm::value_ptr(viewPos));
+        glUniform3fv(glGetUniformLocation(characterShaderProgram, "ambientColor"), 1, glm::value_ptr(ambientColor));
+        glUniform3fv(glGetUniformLocation(characterShaderProgram, "diffuseColor"), 1, glm::value_ptr(diffuseColor));
+        glUniform3fv(glGetUniformLocation(characterShaderProgram, "specularColor"), 1, glm::value_ptr(specularColor));
+        glUniform1f(glGetUniformLocation(characterShaderProgram, "shininess"), shininess);
+        glUniform1f(glGetUniformLocation(characterShaderProgram, "lightIntensity"), lightIntensity);
+
+        unsigned int modelLocChar = glGetUniformLocation(characterShaderProgram, "model");
+        unsigned int viewLocChar = glGetUniformLocation(characterShaderProgram, "view");
+        unsigned int projectionLocChar = glGetUniformLocation(characterShaderProgram, "projection");
+        unsigned int textureLoc = glGetUniformLocation(characterShaderProgram, "texture_diffuse");
+        unsigned int normalMapLoc = glGetUniformLocation(characterShaderProgram, "texture_normal");
+        unsigned int cubemapLoc = glGetUniformLocation(characterShaderProgram, "cubemap");
+
+        glUniformMatrix4fv(viewLocChar, 1, GL_FALSE, glm::value_ptr(viewMatrix));
+        glUniformMatrix4fv(projectionLocChar, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, characterTexture);
+        glUniform1i(textureLoc, 0);
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, characterNormalMap);
+        glUniform1i(normalMapLoc, 1);
+
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
+        glUniform1i(cubemapLoc, 2);
+
+        glActiveTexture(GL_TEXTURE2); // Assuming TEXTURE0 is diffuse, TEXTURE1 is normal
+        glBindTexture(GL_TEXTURE_2D, characterMaskTexture);
+        glUniform1i(glGetUniformLocation(characterShaderProgram, "texture_mask"), 2);
+
+        glUniformMatrix4fv(modelLocChar, 1, GL_FALSE, glm::value_ptr(modelMatrix));
+
+        for (const auto& mesh : loadedMeshes) {
+            glBindVertexArray(mesh.VAO);
+            glDrawElements(GL_TRIANGLES, mesh.indices.size(), GL_UNSIGNED_INT, 0);
         }
     }
 
-    // Render character model with normal mapping and cubemap reflection
-    glUseProgram(characterShaderProgram);
-
-    // Render character model with normal mapping and cubemap reflection
-    glUseProgram(characterShaderProgram);
-
-    glm::vec3 lightDir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f)); // Directional light direction
-    glm::vec3 viewPos = camera.getPosition();
-    glm::vec3 ambientColor = glm::vec3(0.3f, 0.3f, 0.3f);
-    glm::vec3 diffuseColor = glm::vec3(1.0f, 1.0f, 1.0f);
-    glm::vec3 specularColor = glm::vec3(0.3f, 0.3f, 0.3f);
-    float shininess = 32.0f;
-    float lightIntensity = 1.25f; // Set your desired light intensity here
-
-    glUniform3fv(glGetUniformLocation(characterShaderProgram, "lightDir"), 1, glm::value_ptr(lightDir));
-    glUniform3fv(glGetUniformLocation(characterShaderProgram, "viewPos"), 1, glm::value_ptr(viewPos));
-    glUniform3fv(glGetUniformLocation(characterShaderProgram, "ambientColor"), 1, glm::value_ptr(ambientColor));
-    glUniform3fv(glGetUniformLocation(characterShaderProgram, "diffuseColor"), 1, glm::value_ptr(diffuseColor));
-    glUniform3fv(glGetUniformLocation(characterShaderProgram, "specularColor"), 1, glm::value_ptr(specularColor));
-    glUniform1f(glGetUniformLocation(characterShaderProgram, "shininess"), shininess);
-    glUniform1f(glGetUniformLocation(characterShaderProgram, "lightIntensity"), lightIntensity); // Add this line
-
-    unsigned int modelLocChar = glGetUniformLocation(characterShaderProgram, "model");
-    unsigned int viewLocChar = glGetUniformLocation(characterShaderProgram, "view");
-    unsigned int projectionLocChar = glGetUniformLocation(characterShaderProgram, "projection");
-    unsigned int textureLoc = glGetUniformLocation(characterShaderProgram, "texture_diffuse");
-    unsigned int normalMapLoc = glGetUniformLocation(characterShaderProgram, "texture_normal");
-    unsigned int cubemapLoc = glGetUniformLocation(characterShaderProgram, "cubemap");
-
-    glUniformMatrix4fv(viewLocChar, 1, GL_FALSE, glm::value_ptr(viewMatrix));
-    glUniformMatrix4fv(projectionLocChar, 1, GL_FALSE, glm::value_ptr(projectionMatrix));
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, characterTexture);
-    glUniform1i(textureLoc, 0);
-
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, characterNormalMap);
-    glUniform1i(normalMapLoc, 1);
-
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
-    glUniform1i(cubemapLoc, 2);
-
-    glActiveTexture(GL_TEXTURE2); // Assuming TEXTURE0 is diffuse, TEXTURE1 is normal
-    glBindTexture(GL_TEXTURE_2D, characterMaskTexture);
-    glUniform1i(glGetUniformLocation(characterShaderProgram, "texture_mask"), 2);
-
-    glm::mat4 modelMatrix = glm::mat4(1.0f);
-    modelMatrix = glm::rotate(modelMatrix, staticNodeRotationAngle, staticNodeRotationAxis);
-    modelMatrix = glm::rotate(modelMatrix, (float)glfwGetTime() * characterRotationSpeed, glm::vec3(0.0f, 0.0f, 1.0f)); // Rotate around the Y-axis
-    modelMatrix = glm::scale(modelMatrix, glm::vec3(0.025f));
-
-    glUniformMatrix4fv(modelLocChar, 1, GL_FALSE, glm::value_ptr(modelMatrix));
-
-    for (const auto& mesh : loadedMeshes) {
-        glBindVertexArray(mesh.VAO);
-        glDrawElements(GL_TRIANGLES, mesh.indices.size(), GL_UNSIGNED_INT, 0);
-    }
-
-    std::string windowTitle = "Frustum Culling - Object Count: " + std::to_string(visibleObjectCount);
+    std::string windowTitle = "Frustum Culling - Visible Objects: " + std::to_string(visibleObjectCount);
     glfwSetWindowTitle(window, windowTitle.c_str());
 }
 
@@ -400,7 +434,7 @@ void render(GLFWwindow* window) {
 
     // 3. Blur bright areas (Gaussian blur)
     bool horizontal = true, first_iteration = true;
-    unsigned int amount = 20;
+    unsigned int amount = 10;
     glUseProgram(blurShaderProgram);
     float weights[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
     glUniform1fv(glGetUniformLocation(blurShaderProgram, "weight"), 5, weights);
@@ -465,17 +499,13 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
 }
 
 void initializeCubes() {
-    int gridSize = 50;
-    float spacing = 5.0f;
+    int gridSize = 100;
+    float spacing = 3.5f;
 
     for (int i = -gridSize; i <= gridSize; i++) {
         for (int j = -gridSize; j <= gridSize; j++) {
-            Cube cube;
-            cube.position = glm::vec3(i * spacing, 0.0f, j * spacing);
-            cube.size = 1.0f;
-            cube.color = glm::vec3(1.0f, 1.0f, 1.0f); // Color is not used now, but we keep it for future use
-            cube.gridPosition = glm::vec2(i + gridSize, j + gridSize); // Set grid position
-            cubes.push_back(cube);
+            cubePositions.push_back(glm::vec3(i * spacing, 0.0f, j * spacing));
+            cubeGridPositions.push_back(glm::vec2(i + gridSize, j + gridSize));
         }
     }
 
@@ -533,6 +563,28 @@ void initializeCubes() {
 
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
+
+    // Create and bind the instance buffer
+    glGenBuffers(1, &instanceVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+    glBufferData(GL_ARRAY_BUFFER, cubePositions.size() * sizeof(glm::vec3), &cubePositions[0], GL_STATIC_DRAW);
+
+    // Set up the instance buffer attributes
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+    glVertexAttribDivisor(1, 1);
+
+    // Create and bind the grid position buffer
+    glGenBuffers(1, &gridPositionVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, gridPositionVBO);
+    glBufferData(GL_ARRAY_BUFFER, cubeGridPositions.size() * sizeof(glm::vec2), &cubeGridPositions[0], GL_STATIC_DRAW);
+
+    // Set up the grid position buffer attributes
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(glm::vec2), (void*)0);
+    glVertexAttribDivisor(2, 1);
+
+    glBindVertexArray(0);
 }
 
 void initializeShaders() {
@@ -540,18 +592,23 @@ void initializeShaders() {
     const char* cubeVertexShaderSource = R"(
     #version 330 core
     layout(location = 0) in vec3 aPos;
+    layout(location = 1) in vec3 aOffset;
+    layout(location = 2) in vec2 aGridPosition;
+
+    out vec2 GridPosition;
+
     uniform mat4 model;
     uniform mat4 view;
     uniform mat4 projection;
     uniform float time;
-    uniform vec2 gridPosition;
 
     void main() {
+        GridPosition = aGridPosition;
         float frequency = 2.0;
-        float phaseShift = (gridPosition.x + gridPosition.y) * 0.5;
+        float phaseShift = (aGridPosition.x + aGridPosition.y) * 0.5;
         float verticalDisplacement = sin(time * frequency + phaseShift) * 0.5;
         vec3 newPos = aPos + vec3(0.0, verticalDisplacement, 0.0);
-        gl_Position = projection * view * model * vec4(newPos, 1.0);
+        gl_Position = projection * view * model * vec4(newPos + aOffset, 1.0);
     }
     )";
 
@@ -559,18 +616,19 @@ void initializeShaders() {
     #version 330 core
     out vec4 FragColor;
 
+    in vec2 GridPosition;
+
     uniform float time;
-    uniform vec2 gridPosition;
 
     void main() {
         float frequency = 2.0;
-        float phaseShift = (gridPosition.x + gridPosition.y) * 0.5;
+        float phaseShift = (GridPosition.x + GridPosition.y) * 0.5;
         float t = time * frequency + phaseShift;
-        
+    
         vec3 color;
-        color.r = sin(t) * 0.5 + 0.5; // Red channel oscillates with sine wave
-        color.g = sin(t + 2.0 * 3.14159 / 3.0) * 0.5 + 0.5; // Green channel shifted by 2?/3
-        color.b = sin(t + 4.0 * 3.14159 / 3.0) * 0.5 + 0.5; // Blue channel shifted by 4?/3
+        color.r = sin(t) * 0.5 + 0.5;
+        color.g = sin(t + 2.0 * 3.14159 / 3.0) * 0.5 + 0.5;
+        color.b = sin(t + 4.0 * 3.14159 / 3.0) * 0.5 + 0.5;
 
         FragColor = vec4(color, 1.0);
     }
