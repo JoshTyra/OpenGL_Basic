@@ -376,11 +376,11 @@ void renderScene(GLFWwindow* window) {
 
     glm::vec3 lightDir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f)); // Directional light direction
     glm::vec3 viewPos = camera.getPosition();
-    glm::vec3 ambientColor = glm::vec3(0.3f, 0.3f, 0.3f);
+    glm::vec3 ambientColor = glm::vec3(0.25f, 0.25f, 0.25f);
     glm::vec3 diffuseColor = glm::vec3(1.0f, 1.0f, 1.0f);
-    glm::vec3 specularColor = glm::vec3(0.3f, 0.3f, 0.3f);
+    glm::vec3 specularColor = glm::vec3(0.5f, 0.5f, 0.5f);
     float shininess = 32.0f;
-    float lightIntensity = 1.25f; // Set your desired light intensity here
+    float lightIntensity = 1.0f; // Set your desired light intensity here
 
     glUniform3fv(glGetUniformLocation(characterShaderProgram, "lightDir"), 1, glm::value_ptr(lightDir));
     glUniform3fv(glGetUniformLocation(characterShaderProgram, "viewPos"), 1, glm::value_ptr(viewPos));
@@ -766,12 +766,12 @@ void initializeShaders() {
             vec3 normal = texture(texture_normal, TexCoord).rgb;
             normal = normal * 2.0f - 1.0f;
             normal.y = -normal.y;
-            normal = normalize(normal * 1.25f);  // Apply bump strength
+            normal = normalize(normal);  // Apply bump strength
 
             vec4 diffuseTexture = texture(texture_diffuse, TexCoord);
             vec3 diffuseTexColor = diffuseTexture.rgb;
             float alphaValue = diffuseTexture.a;
-            float blendFactor = 0.3f;
+            float blendFactor = 0.1f;
 
             vec3 maskValue = texture(texture_mask, TexCoord).rgb;
             vec3 blendedColor = mix(diffuseTexColor, diffuseTexColor * changeColor, maskValue);
