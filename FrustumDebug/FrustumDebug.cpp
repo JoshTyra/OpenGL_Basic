@@ -157,6 +157,11 @@ std::vector<std::string> colorCodes = {
     "#D2D2D2", // Multiplayer White
     "#758550", // Campaign Color Lighter
     "#55613A"  // Campaign Color Darker
+    "#000000", // Halo ce multiplayer black
+    "#707E71", // Halo ce multiplayer gray
+    "#01FFFF", // Halo ce multiplayer cyan
+    "#6493ED", // Halo ce multiplayer cobalt
+    "#C69C6C", // Halo ce multiplayer tan
 };
 
 glm::vec3 getRandomColor() {
@@ -536,7 +541,7 @@ void initializeCubes() {
         }
     }
 
-    int characterGridSize = 1; // Adjust this value as desired
+    int characterGridSize = 10; // Adjust this value as desired
     float characterSpacing = 5.0f; // Adjust the spacing between characters
 
     for (int i = -characterGridSize; i <= characterGridSize; i++) {
