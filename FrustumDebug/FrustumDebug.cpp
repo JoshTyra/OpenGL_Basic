@@ -526,7 +526,7 @@ void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
 }
 
 void initializeCubes() {
-    int gridSize = 100;
+    int gridSize = 0;
     float spacing = 3.5f;
 
     for (int i = -gridSize; i <= gridSize; i++) {
@@ -536,8 +536,8 @@ void initializeCubes() {
         }
     }
 
-    int characterGridSize = 10; // Adjust this value as desired
-    float characterSpacing = 10.0f; // Adjust the spacing between characters
+    int characterGridSize = 1; // Adjust this value as desired
+    float characterSpacing = 5.0f; // Adjust the spacing between characters
 
     for (int i = -characterGridSize; i <= characterGridSize; i++) {
         for (int j = -characterGridSize; j <= characterGridSize; j++) {
@@ -733,68 +733,6 @@ void initializeShaders() {
             ReflectDir = reflect(I, N);
         }
         )";
-
-    //const char* characterFragmentShaderSource = R"(
-    //    #version 330 core
-
-    //    out vec4 FragColor;
-
-    //    in vec2 TexCoord;
-    //    in vec3 TangentLightDir;
-    //    in vec3 TangentViewPos;
-    //    in vec3 TangentFragPos;
-    //    in vec3 ReflectDir;
-
-    //    uniform vec3 ambientColor;
-    //    uniform vec3 diffuseColor;
-    //    uniform vec3 specularColor;
-    //    uniform float shininess;
-    //    uniform sampler2D texture_diffuse;
-    //    uniform sampler2D texture_normal;
-    //    uniform sampler2D texture_mask;
-    //    uniform samplerCube cubemap;
-    //    uniform float lightIntensity; // Add this line
-
-    //    void main() {
-    //        vec3 normal = texture(texture_normal, TexCoord).rgb;
-    //        normal = normal * 2.0f - 1.0f;
-    //        normal.y = -normal.y;
-    //        normal = normalize(normal);
-
-    //        vec4 diffuseTexture = texture(texture_diffuse, TexCoord);
-    //        vec3 diffuseTexColor = diffuseTexture.rgb;
-    //        float specularMask = diffuseTexture.a;
-
-    //        vec3 maskValue = texture(texture_mask, TexCoord).rgb;
-    //        vec3 changeColor = vec3(0.4588235294117647f, 0.5215686274509804f, 0.3137254901960784f);
-    //        vec3 blendedColor = mix(diffuseTexColor, diffuseTexColor * changeColor, maskValue);
-
-    //        vec3 ambient = ambientColor * blendedColor;
-
-    //        vec3 lightDir = normalize(TangentLightDir);
-    //        float diff = max(dot(normal, lightDir), 0.0);
-    //        vec3 diffuse = diffuseColor * diff * blendedColor * lightIntensity; // Multiply by lightIntensity
-
-    //        vec3 viewDir = normalize(TangentViewPos - TangentFragPos);
-    //        vec3 halfwayDir = normalize(lightDir + viewDir);
-    //        float spec = pow(max(dot(normal, halfwayDir), 0.0), shininess);
-    //        vec3 specular = specularColor * spec * specularMask * lightIntensity; // Multiply by lightIntensity
-
-    //        float fresnelBias = 0.1;
-    //        float fresnelScale = 0.5;
-    //        float fresnelPower = 0.5;
-    //        vec3 I = normalize(TangentFragPos - TangentViewPos);
-    //        float fresnel = fresnelBias + fresnelScale * pow(1.0 - dot(I, normal), fresnelPower);
-    //        specular *= fresnel;
-
-    //        vec3 color = ambient + diffuse + specular;
-    //        vec3 reflectedColor = texture(cubemap, ReflectDir).rgb;
-    //        reflectedColor *= specularMask;
-    //        color = mix(color, reflectedColor, 0.2);
-
-    //        FragColor = vec4(color, 1.0);
-    //    }
-    //    )";
 
         const char* characterFragmentShaderSource = R"(
         #version 330 core
