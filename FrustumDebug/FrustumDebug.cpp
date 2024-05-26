@@ -86,6 +86,19 @@ std::vector<Vertex> aggregatedVertices; // Global vector to hold all vertices of
 std::vector<Mesh> loadedMeshes;
 AABB loadedModelAABB;
 
+// Water shit
+unsigned int waterVAO, waterVBO, waterEBO;
+unsigned int waterShaderProgram;
+unsigned int waterNormalMap;
+unsigned int waterCubeMapTexture;
+unsigned int fresnelTexture;
+std::vector<Vertex> waterVertices;
+std::vector<unsigned int> waterIndices;
+
+// Skybox shit
+unsigned int skyboxVAO, skyboxVBO;
+unsigned int skyboxShaderProgram;
+
 unsigned int hdrFBO;
 unsigned int colorBuffers[2];
 unsigned int rboDepth;
@@ -110,6 +123,9 @@ float randomFloat();
 unsigned int compileShader(unsigned int type, const char* source);
 unsigned int createShaderProgram(unsigned int vertexShader, unsigned int fragmentShader);
 void renderQuad();
+void createWaterMesh(float scale);
+void renderWater();
+void initializeSkybox();
 
 unsigned int loadCubemap(std::vector<std::string> faces) {
     unsigned int textureID;
@@ -198,7 +214,17 @@ int main() {
 
     cubemapTexture = loadCubemap(faces);
 
-    initializeOpenGL(window);
+
+    std::vector<std::string> waterFaces{
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/snow_right.tga"),
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/snow_left.tga"),
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/snow_up.tga"),
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/snow_down.tga"),
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/snow_front.tga"),
+    FileSystemUtils::getAssetFilePath("textures/cubemaps/snow_back.tga")
+    };
+
+    waterCubeMapTexture = loadCubemap(waterFaces);
 
     std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/masterchief.fbx");
     loadModel(staticModelPath);
@@ -208,6 +234,12 @@ int main() {
     characterNormalMap = loadTexture(FileSystemUtils::getAssetFilePath("textures/masterchief_bump.tga").c_str());
 
     characterMaskTexture = loadTexture(FileSystemUtils::getAssetFilePath("textures/masterchief_cc.tga").c_str());
+
+    waterNormalMap = loadTexture(FileSystemUtils::getAssetFilePath("textures/water_bump4.tga").c_str());
+
+    fresnelTexture = loadTexture(FileSystemUtils::getAssetFilePath("textures/fresnel.tga").c_str());
+
+    initializeOpenGL(window);
 
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = static_cast<float>(glfwGetTime());
@@ -237,6 +269,8 @@ void initializeOpenGL(GLFWwindow* window) {
 
     initializeShaders();
     initializeCubes();
+    createWaterMesh(25.0f);
+    initializeSkybox();
 
     glm::vec3 randomColor = getRandomColor();
     glUseProgram(characterShaderProgram);
@@ -297,6 +331,23 @@ void renderScene(GLFWwindow* window) {
     viewMatrix = camera.getViewMatrix();
 
     frustum.update(viewMatrix, projectionMatrix);
+
+    // Render skybox
+    glDepthMask(GL_FALSE); // Disable depth writing
+    glDepthFunc(GL_LEQUAL); // Change depth function so depth test passes when values are equal to depth buffer's content
+    glUseProgram(skyboxShaderProgram);
+    glm::mat4 viewMatrixSkybox = glm::mat4(glm::mat3(camera.getViewMatrix())); // Remove translation from the view matrix
+    glUniformMatrix4fv(glGetUniformLocation(skyboxShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(viewMatrixSkybox));
+    glUniformMatrix4fv(glGetUniformLocation(skyboxShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projectionMatrix));
+
+    glBindVertexArray(skyboxVAO);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, waterCubeMapTexture); // Use waterCubeMapTexture to check alignment
+    glUniform1i(glGetUniformLocation(skyboxShaderProgram, "skybox"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    glBindVertexArray(0);
+    glDepthFunc(GL_LESS); // Set depth function back to default
+    glDepthMask(GL_TRUE); // Enable depth writing
 
     // Perform frustum culling on cubes using cubePositions and cubeGridPositions
     std::vector<glm::vec3> visibleCubePositions;
@@ -436,6 +487,9 @@ void renderScene(GLFWwindow* window) {
     }
 
     visibleObjectCount += visibleCharacterPositions.size(); // Increment visible object count by character instances
+
+    // Render water
+    renderWater();
 
     std::string windowTitle = "Frustum Culling - Visible Objects: " + std::to_string(visibleObjectCount);
     glfwSetWindowTitle(window, windowTitle.c_str());
@@ -945,6 +999,119 @@ void initializeShaders() {
     finalCombineShaderProgram = createShaderProgram(finalCombineVertexShader, finalCombineFragmentShader);
     glDeleteShader(finalCombineVertexShader);
     glDeleteShader(finalCombineFragmentShader);
+
+    // Water shader
+    const char* waterVertexShaderSource = R"(
+    #version 430 core
+
+    layout(location = 0) in vec3 inPosition;
+    layout(location = 1) in vec3 inNormal;
+    layout(location = 2) in vec2 inTexCoord;
+
+    out vec3 fragPosition;
+    out vec3 fragNormal;
+    out vec2 fragTexCoord;
+
+    uniform mat4 model;
+    uniform mat4 view;
+    uniform mat4 projection;
+
+    void main()
+    {
+        fragPosition = vec3(model * vec4(inPosition, 1.0));
+        fragNormal = mat3(transpose(inverse(model))) * inNormal;
+        fragTexCoord = inTexCoord;
+        gl_Position = projection * view * vec4(fragPosition, 1.0);
+    }
+    )";
+
+    const char* waterFragmentShaderSource = R"(
+    #version 430 core
+    in vec3 fragPosition;
+    in vec3 fragNormal;
+    in vec2 fragTexCoord;
+    out vec4 fragColor;
+    uniform samplerCube skybox;
+    uniform sampler2D normalMap;
+    uniform sampler2D fresnelMap;
+    uniform vec3 cameraPosition;
+    uniform float waveStrength;
+    uniform float refractionRatio;
+    uniform float time;
+
+    void main() 
+    {
+        vec2 animatedTexCoord1 = fragTexCoord + vec2(time * 0.01, time * 0.02);
+        vec2 animatedTexCoord2 = fragTexCoord + vec2(-time * 0.015, time * 0.025);
+        vec3 normal1 = texture(normalMap, animatedTexCoord1).rgb;
+        vec3 normal2 = texture(normalMap, animatedTexCoord2).rgb;
+        normal1 = normalize(normal1 * 2.0 - 1.0);
+        normal2 = normalize(normal2 * 2.0 - 1.0);
+
+        vec3 perturbedNormal = normalize(fragNormal + (normal1 + normal2) * waveStrength);
+
+        vec3 I = normalize(fragPosition - cameraPosition);
+        float fresnelTerm = dot(I, perturbedNormal);
+        fresnelTerm = clamp(fresnelTerm, 0.0, 1.0);
+
+        vec3 R = reflect(I, perturbedNormal);
+        vec3 Rf = refract(I, perturbedNormal, refractionRatio);
+
+        vec4 reflectionColor = texture(skybox, R);
+        vec4 refractionColor = texture(skybox, Rf);
+
+        vec2 fresnelTexCoord = vec2(fresnelTerm, 0.5); // Calculate the texture coordinates for the fresnel map
+        vec3 fresnelBlend = texture(fresnelMap, fresnelTexCoord).rgb;
+
+        vec3 finalColor = mix(refractionColor.rgb, reflectionColor.rgb, fresnelBlend);
+
+        fragColor = vec4(finalColor, 1.0);
+    }
+    )";
+
+    unsigned int waterVertexShader = compileShader(GL_VERTEX_SHADER, waterVertexShaderSource);
+    unsigned int waterFragmentShader = compileShader(GL_FRAGMENT_SHADER, waterFragmentShaderSource);
+    waterShaderProgram = createShaderProgram(waterVertexShader, waterFragmentShader);
+    glDeleteShader(waterVertexShader);
+    glDeleteShader(waterFragmentShader);
+
+    // Skybox shader
+    const char* skyboxVertexShaderSource = R"(
+    #version 430 core
+    layout (location = 0) in vec3 aPos;
+    out vec3 TexCoords;
+
+    uniform mat4 view;
+    uniform mat4 projection;
+
+    void main()
+    {
+        TexCoords = aPos;
+        mat4 rotView = mat4(mat3(view)); // remove translation part of the view matrix
+        gl_Position = projection * rotView * vec4(aPos, 1.0);
+    }
+    )";
+
+    const char* skyboxFragmentShaderSource = R"(
+    #version 430 core
+    out vec4 FragColor;
+    in vec3 TexCoords;
+
+    uniform samplerCube skybox;
+
+    void main()
+    {
+        FragColor = texture(skybox, TexCoords);
+    }
+    )";
+
+    unsigned int skyboxVertexShader = compileShader(GL_VERTEX_SHADER, skyboxVertexShaderSource);
+    unsigned int skyboxFragmentShader = compileShader(GL_FRAGMENT_SHADER, skyboxFragmentShaderSource);
+
+    skyboxShaderProgram = createShaderProgram(skyboxVertexShader, skyboxFragmentShader);
+
+    glDeleteShader(skyboxVertexShader);
+    glDeleteShader(skyboxFragmentShader);
 }
 
 unsigned int compileShader(unsigned int type, const char* source) {
@@ -997,8 +1164,8 @@ unsigned int loadTexture(const char* path) {
         glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
         glGenerateMipmap(GL_TEXTURE_2D);
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
@@ -1203,4 +1370,162 @@ void renderQuad() {
     glBindVertexArray(quadVAO);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
+}
+
+void createWaterMesh(float scale)
+{
+    // Create water mesh with two polygons (a single quad)
+    const int waterGridSize = 1;
+    const float waterGridSpacing = 1.0f * scale;
+
+    waterVertices.clear();
+    waterIndices.clear();
+
+    // Create vertices
+    for (int z = 0; z <= waterGridSize; ++z) {
+        for (int x = 0; x <= waterGridSize; ++x) {
+            Vertex vertex;
+            vertex.Position = glm::vec3(x * waterGridSpacing, 0.0f, z * waterGridSpacing);
+            vertex.Normal = glm::vec3(0.0f, 1.0f, 0.0f); // Ensure normals are pointing up
+            vertex.TexCoord = glm::vec2(static_cast<float>(x) / waterGridSize, static_cast<float>(z) / waterGridSize);
+            waterVertices.push_back(vertex);
+        }
+    }
+
+    // Create indices for the two triangles
+    unsigned int topLeft = 0;
+    unsigned int topRight = 1;
+    unsigned int bottomLeft = 2;
+    unsigned int bottomRight = 3;
+
+    waterIndices.push_back(topLeft);
+    waterIndices.push_back(bottomLeft);
+    waterIndices.push_back(topRight);
+
+    waterIndices.push_back(topRight);
+    waterIndices.push_back(bottomLeft);
+    waterIndices.push_back(bottomRight);
+
+    // Generate buffers and arrays
+    glGenVertexArrays(1, &waterVAO);
+    glGenBuffers(1, &waterVBO);
+    glGenBuffers(1, &waterEBO);
+
+    glBindVertexArray(waterVAO);
+
+    // Bind and set vertex buffer
+    glBindBuffer(GL_ARRAY_BUFFER, waterVBO);
+    glBufferData(GL_ARRAY_BUFFER, waterVertices.size() * sizeof(Vertex), waterVertices.data(), GL_STATIC_DRAW);
+
+    // Bind and set index buffer
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, waterEBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, waterIndices.size() * sizeof(unsigned int), waterIndices.data(), GL_STATIC_DRAW);
+
+    // Define vertex attributes
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Position));
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
+    glEnableVertexAttribArray(1);
+
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoord));
+    glEnableVertexAttribArray(2);
+
+    glBindVertexArray(0);
+}
+
+void renderWater() {
+    glUseProgram(waterShaderProgram);
+
+    // Water model matrix
+    glm::mat4 waterModelMatrix = glm::mat4(1.0f);
+
+    // Set up uniform variables
+    glUniformMatrix4fv(glGetUniformLocation(waterShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(waterModelMatrix));
+    glUniformMatrix4fv(glGetUniformLocation(waterShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(viewMatrix));
+    glUniformMatrix4fv(glGetUniformLocation(waterShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projectionMatrix));
+    glUniform3fv(glGetUniformLocation(waterShaderProgram, "cameraPosition"), 1, glm::value_ptr(camera.getPosition()));
+    glUniform1f(glGetUniformLocation(waterShaderProgram, "waveStrength"), 0.25f);
+    glUniform1f(glGetUniformLocation(waterShaderProgram, "refractionRatio"), 1.33f);
+
+    float time = static_cast<float>(glfwGetTime());
+    glUniform1f(glGetUniformLocation(waterShaderProgram, "time"), time);
+
+    // Bind textures
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, waterCubeMapTexture);
+    glUniform1i(glGetUniformLocation(waterShaderProgram, "skybox"), 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, waterNormalMap);
+    glUniform1i(glGetUniformLocation(waterShaderProgram, "normalMap"), 1);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, fresnelTexture);
+    glUniform1i(glGetUniformLocation(waterShaderProgram, "fresnelMap"), 2);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    // Bind VAO and draw water geometry
+    glBindVertexArray(waterVAO);
+    glDrawElements(GL_TRIANGLES, waterIndices.size(), GL_UNSIGNED_INT, 0);
+}
+
+void initializeSkybox()
+{
+    float skyboxVertices[] = {
+        // positions          
+        -1.0f,  1.0f, -1.0f,
+        -1.0f, -1.0f, -1.0f,
+         1.0f, -1.0f, -1.0f,
+         1.0f, -1.0f, -1.0f,
+         1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+
+        -1.0f, -1.0f,  1.0f,
+        -1.0f, -1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,
+
+         1.0f, -1.0f, -1.0f,
+         1.0f, -1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f, -1.0f,
+         1.0f, -1.0f, -1.0f,
+
+        -1.0f, -1.0f,  1.0f,
+        -1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,
+         1.0f, -1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,
+
+        -1.0f,  1.0f, -1.0f,
+         1.0f,  1.0f, -1.0f,
+         1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,
+        -1.0f,  1.0f,  1.0f,
+        -1.0f,  1.0f, -1.0f,
+
+        -1.0f, -1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,
+         1.0f, -1.0f, -1.0f,
+         1.0f, -1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,
+         1.0f, -1.0f,  1.0f
+    };
+
+    glGenVertexArrays(1, &skyboxVAO);
+    glGenBuffers(1, &skyboxVBO);
+    glBindVertexArray(skyboxVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, skyboxVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), &skyboxVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
 }
