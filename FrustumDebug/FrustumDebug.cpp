@@ -18,6 +18,7 @@
 #include <assimp/postprocess.h>
 #include <random>
 #include <chrono>
+#include <map>
 
 // Constants and global variables
 const int WIDTH = 2560;
@@ -48,7 +49,23 @@ struct Vertex {
     glm::vec3 Normal;
     glm::vec3 Tangent;
     glm::vec3 Bitangent;
+    glm::ivec4 BoneIDs;
+    glm::vec4 Weights;
 };
+
+struct BoneInfo {
+    glm::mat4 BoneOffset;
+    glm::mat4 FinalTransformation;
+
+    BoneInfo() : BoneOffset(1.0f), FinalTransformation(1.0f) {}
+};
+
+std::map<std::string, int> boneMapping; // maps a bone name to its index
+std::vector<BoneInfo> boneInfo;
+int numBones = 0;
+std::vector<glm::mat4> boneTransforms;
+const aiScene* scene = nullptr;
+Assimp::Importer importer;
 
 struct AABB {
     glm::vec3 min;
@@ -114,7 +131,7 @@ void initializeCubes();
 void initializeShaders();
 void loadModel(const std::string& path);
 void processNode(aiNode* node, const aiScene* scene);
-void processMesh(aiMesh* mesh, const aiScene* scene);
+void processMesh(aiMesh* mesh, const aiScene* scene, const aiMatrix4x4& nodeTransformation);
 void storeMesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices);
 AABB computeAABB(const std::vector<Vertex>& vertices);
 AABB transformAABB(const AABB& aabb, const glm::mat4& transform);
@@ -126,6 +143,15 @@ void renderQuad();
 void createWaterMesh(float scale);
 void renderWater();
 void initializeSkybox();
+void calcInterpolatedPosition(aiVector3D& out, float animationTime, const aiNodeAnim* nodeAnim);
+void calcInterpolatedRotation(aiQuaternion& out, float animationTime, const aiNodeAnim* nodeAnim);
+void calcInterpolatedScaling(aiVector3D& out, float animationTime, const aiNodeAnim* nodeAnim);
+const aiNodeAnim* findNodeAnim(const aiAnimation* animation, const std::string nodeName);
+void readNodeHierarchy(float animationTime, const aiNode* node, const glm::mat4& parentTransform);
+void updateBoneTransforms(float timeInSeconds, const aiScene* scene);
+unsigned int findPosition(float animationTime, const aiNodeAnim* nodeAnim);
+unsigned int findRotation(float animationTime, const aiNodeAnim* nodeAnim);
+unsigned int findScaling(float animationTime, const aiNodeAnim* nodeAnim);
 
 unsigned int loadCubemap(std::vector<std::string> faces) {
     unsigned int textureID;
@@ -226,7 +252,7 @@ int main() {
 
     waterCubeMapTexture = loadCubemap(waterFaces);
 
-    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/masterchief.fbx");
+    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/combat_sword_idle.fbx");
     loadModel(staticModelPath);
 
     characterTexture = loadTexture(FileSystemUtils::getAssetFilePath("textures/masterchief_D.tga").c_str());
@@ -333,28 +359,27 @@ void renderScene(GLFWwindow* window) {
     frustum.update(viewMatrix, projectionMatrix);
 
     // Render skybox
-    glDepthMask(GL_FALSE); // Disable depth writing
-    glDepthFunc(GL_LEQUAL); // Change depth function so depth test passes when values are equal to depth buffer's content
+    glDepthMask(GL_FALSE);
+    glDepthFunc(GL_LEQUAL);
     glUseProgram(skyboxShaderProgram);
-    glm::mat4 viewMatrixSkybox = glm::mat4(glm::mat3(camera.getViewMatrix())); // Remove translation from the view matrix
+    glm::mat4 viewMatrixSkybox = glm::mat4(glm::mat3(camera.getViewMatrix()));
     glUniformMatrix4fv(glGetUniformLocation(skyboxShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(viewMatrixSkybox));
     glUniformMatrix4fv(glGetUniformLocation(skyboxShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projectionMatrix));
 
     glBindVertexArray(skyboxVAO);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, waterCubeMapTexture); // Use waterCubeMapTexture to check alignment
+    glBindTexture(GL_TEXTURE_CUBE_MAP, waterCubeMapTexture);
     glUniform1i(glGetUniformLocation(skyboxShaderProgram, "skybox"), 0);
     glDrawArrays(GL_TRIANGLES, 0, 36);
     glBindVertexArray(0);
-    glDepthFunc(GL_LESS); // Set depth function back to default
-    glDepthMask(GL_TRUE); // Enable depth writing
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
 
-    // Perform frustum culling on cubes using cubePositions and cubeGridPositions
+    // Perform frustum culling on cubes
     std::vector<glm::vec3> visibleCubePositions;
     std::vector<glm::vec2> visibleCubeGridPositions;
 
-    float cubeSize = 1.0f; // Adjust this value based on your cube size
-
+    float cubeSize = 1.0f;
     for (size_t i = 0; i < cubePositions.size(); ++i) {
         const glm::vec3& position = cubePositions[i];
         if (frustum.isSphereInFrustum(position, cubeSize)) {
@@ -363,19 +388,16 @@ void renderScene(GLFWwindow* window) {
         }
     }
 
-    // Update the instance buffer with visible cube positions
     if (!visibleCubePositions.empty()) {
         glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
         glBufferData(GL_ARRAY_BUFFER, visibleCubePositions.size() * sizeof(glm::vec3), &visibleCubePositions[0], GL_STATIC_DRAW);
     }
 
-    // Update the grid position buffer with visible cube grid positions
     if (!visibleCubeGridPositions.empty()) {
         glBindBuffer(GL_ARRAY_BUFFER, gridPositionVBO);
         glBufferData(GL_ARRAY_BUFFER, visibleCubeGridPositions.size() * sizeof(glm::vec2), &visibleCubeGridPositions[0], GL_STATIC_DRAW);
     }
 
-    // Render visible cubes using instancing
     glUseProgram(shaderProgram);
     unsigned int modelLoc = glGetUniformLocation(shaderProgram, "model");
     unsigned int viewLoc = glGetUniformLocation(shaderProgram, "view");
@@ -395,14 +417,12 @@ void renderScene(GLFWwindow* window) {
     glBindVertexArray(VAO);
 
     int numVisibleCubes = visibleCubePositions.size();
-    int visibleObjectCount = numVisibleCubes; // Start with visible cubes count
     if (numVisibleCubes > 0) {
         glDrawArraysInstanced(GL_TRIANGLES, 0, 36, numVisibleCubes);
     }
 
     // Perform frustum culling on character instances
     std::vector<glm::vec3> visibleCharacterPositions;
-
     for (const auto& position : characterPositions) {
         glm::mat4 modelMatrix = glm::mat4(1.0f);
         modelMatrix = glm::translate(modelMatrix, position);
@@ -416,22 +436,20 @@ void renderScene(GLFWwindow* window) {
         }
     }
 
-    // Update the character instance buffer with visible positions
     if (!visibleCharacterPositions.empty()) {
         glBindBuffer(GL_ARRAY_BUFFER, characterInstanceVBO);
         glBufferData(GL_ARRAY_BUFFER, visibleCharacterPositions.size() * sizeof(glm::vec3), &visibleCharacterPositions[0], GL_STATIC_DRAW);
     }
 
-    // Render character instances with normal mapping and cubemap reflection
     glUseProgram(characterShaderProgram);
 
-    glm::vec3 lightDir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f)); // Directional light direction
+    glm::vec3 lightDir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f));
     glm::vec3 viewPos = camera.getPosition();
     glm::vec3 ambientColor = glm::vec3(0.25f, 0.25f, 0.25f);
     glm::vec3 diffuseColor = glm::vec3(1.0f, 1.0f, 1.0f);
     glm::vec3 specularColor = glm::vec3(0.5f, 0.5f, 0.5f);
     float shininess = 32.0f;
-    float lightIntensity = 1.0f; // Set your desired light intensity here
+    float lightIntensity = 1.0f;
 
     glUniform3fv(glGetUniformLocation(characterShaderProgram, "lightDir"), 1, glm::value_ptr(lightDir));
     glUniform3fv(glGetUniformLocation(characterShaderProgram, "viewPos"), 1, glm::value_ptr(viewPos));
@@ -460,17 +478,30 @@ void renderScene(GLFWwindow* window) {
     glUniform1i(normalMapLoc, 1);
 
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
-    glUniform1i(cubemapLoc, 2);
-
-    glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, characterMaskTexture);
     glUniform1i(glGetUniformLocation(characterShaderProgram, "texture_mask"), 2);
+
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
+    glUniform1i(cubemapLoc, 3);
 
     glBindBuffer(GL_ARRAY_BUFFER, characterInstanceVBO);
     glEnableVertexAttribArray(5);
     glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
     glVertexAttribDivisor(5, 1);
+
+    if (scene && scene->mNumAnimations > 0) {
+        float currentTime = static_cast<float>(glfwGetTime());
+        updateBoneTransforms(currentTime, scene);
+
+        for (unsigned int i = 0; i < boneTransforms.size(); i++) {
+            std::string uniformName = "boneTransforms[" + std::to_string(i) + "]";
+            glUniformMatrix4fv(glGetUniformLocation(characterShaderProgram, uniformName.c_str()), 1, GL_FALSE, glm::value_ptr(boneTransforms[i]));
+        }
+    }
+    else {
+        std::cerr << "ERROR::SCENE:: No valid animations found in the scene." << std::endl;
+    }
 
     for (const auto& position : visibleCharacterPositions) {
         glm::mat4 modelMatrix = glm::mat4(1.0f);
@@ -486,12 +517,10 @@ void renderScene(GLFWwindow* window) {
         }
     }
 
-    visibleObjectCount += visibleCharacterPositions.size(); // Increment visible object count by character instances
-
     // Render water
     renderWater();
 
-    std::string windowTitle = "Frustum Culling - Visible Objects: " + std::to_string(visibleObjectCount);
+    std::string windowTitle = "Frustum Culling - Visible Objects: " + std::to_string(visibleCharacterPositions.size());
     glfwSetWindowTitle(window, windowTitle.c_str());
 }
 
@@ -747,54 +776,71 @@ void initializeShaders() {
     glDeleteShader(cubeFragmentShader);
 
     const char* characterVertexShaderSource = R"(
-        #version 330 core
+    #version 430 core
 
-        layout(location = 0) in vec3 aPos;
-        layout(location = 1) in vec2 aTexCoord;
-        layout(location = 2) in vec3 aNormal;
-        layout(location = 3) in vec3 aTangent;
-        layout(location = 4) in vec3 aBitangent;
-        layout(location = 5) in vec3 aInstancePosition; // Add this line
+    layout(location = 0) in vec3 aPos;
+    layout(location = 1) in vec2 aTexCoord;
+    layout(location = 2) in vec3 aNormal;
+    layout(location = 3) in vec3 aTangent;
+    layout(location = 4) in vec3 aBitangent;
+    layout(location = 5) in ivec4 aBoneIDs; // Bone IDs
+    layout(location = 6) in vec4 aWeights;  // Bone weights
+    layout(location = 7) in vec3 aInstancePosition; // Instance position
 
-        out vec2 TexCoord;
-        out vec3 FragPos;
-        out vec3 TangentLightDir;
-        out vec3 TangentViewPos;
-        out vec3 TangentFragPos;
-        out vec3 ReflectDir;
+    out vec2 TexCoord;
+    out vec3 FragPos;
+    out vec3 TangentLightDir;
+    out vec3 TangentViewPos;
+    out vec3 TangentFragPos;
+    out vec3 ReflectDir;
 
-        uniform mat4 model;
-        uniform mat4 view;
-        uniform mat4 projection;
+    uniform mat4 model;
+    uniform mat4 view;
+    uniform mat4 projection;
+    uniform mat4 boneTransforms[100]; // Assume a maximum of 100 bones
 
-        uniform vec3 lightDir;
-        uniform vec3 viewPos;
+    uniform vec3 lightDir;
+    uniform vec3 viewPos;
 
-        void main() {
-            vec3 transformedPos = aPos + aInstancePosition; // Modify this line
-            gl_Position = projection * view * model * vec4(transformedPos, 1.0);
-            FragPos = vec3(model * vec4(transformedPos, 1.0)); // Modify this line
-            TexCoord = aTexCoord;
+    void main() {
+        // Calculate the bone transformation
+        mat4 boneTransform = boneTransforms[aBoneIDs[0]] * aWeights[0];
+        boneTransform += boneTransforms[aBoneIDs[1]] * aWeights[1];
+        boneTransform += boneTransforms[aBoneIDs[2]] * aWeights[2];
+        boneTransform += boneTransforms[aBoneIDs[3]] * aWeights[3];
 
-            mat3 normalMatrix = transpose(inverse(mat3(model)));
-            vec3 T = normalize(normalMatrix * aTangent);
-            vec3 N = normalize(normalMatrix * aNormal);
-            T = normalize(T - dot(T, N) * N);
-            vec3 B = cross(N, T);
+        // Apply the bone transformation and the instance position
+        vec3 transformedPos = vec3(boneTransform * vec4(aPos, 1.0)) + aInstancePosition;
 
-            mat3 TBN = transpose(mat3(T, B, N));
-            TangentLightDir = TBN * lightDir;
-            TangentViewPos = TBN * viewPos;
-            TangentFragPos = TBN * FragPos;
+        // Apply model, view, and projection transformations
+        gl_Position = projection * view * model * vec4(transformedPos, 1.0);
 
-            // Calculate reflection vector
-            vec3 I = normalize(viewPos - FragPos);
-            ReflectDir = reflect(I, N);
-        }
-        )";
+        // Calculate the fragment position in world space
+        FragPos = vec3(model * vec4(transformedPos, 1.0));
+
+        // Pass the texture coordinates to the fragment shader
+        TexCoord = aTexCoord;
+
+        // Calculate the TBN matrix
+        mat3 normalMatrix = transpose(inverse(mat3(model)));
+        vec3 T = normalize(normalMatrix * aTangent);
+        vec3 N = normalize(normalMatrix * aNormal);
+        T = normalize(T - dot(T, N) * N);
+        vec3 B = cross(N, T);
+
+        mat3 TBN = transpose(mat3(T, B, N));
+        TangentLightDir = TBN * lightDir;
+        TangentViewPos = TBN * viewPos;
+        TangentFragPos = TBN * FragPos;
+
+        // Calculate the reflection vector
+        vec3 I = normalize(viewPos - FragPos);
+        ReflectDir = reflect(I, N);
+    }
+)";
 
         const char* characterFragmentShaderSource = R"(
-        #version 330 core
+        #version 430 core
 
         out vec4 FragColor;
 
@@ -1180,21 +1226,27 @@ unsigned int loadTexture(const char* path) {
 }
 
 void loadModel(const std::string& path) {
-    Assimp::Importer importer;
-    const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_CalcTangentSpace | aiProcess_GenSmoothNormals | aiProcess_JoinIdenticalVertices);
+    scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_CalcTangentSpace | aiProcess_JoinIdenticalVertices);
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         std::cerr << "ERROR::ASSIMP:: " << importer.GetErrorString() << std::endl;
         return;
     }
 
-    // Clear aggregated vertices before loading a new model
+    std::cout << "Model loaded successfully." << std::endl;
+
+    if (scene->mNumAnimations > 0) {
+        std::cout << "Number of animations: " << scene->mNumAnimations << std::endl;
+        for (unsigned int i = 0; i < scene->mNumAnimations; ++i) {
+            std::cout << "Animation " << i << " duration: " << scene->mAnimations[i]->mDuration << std::endl;
+        }
+    }
+    else {
+        std::cout << "No animations found in the model." << std::endl;
+    }
+
     aggregatedVertices.clear();
-
-    // Process the root node recursively
     processNode(scene->mRootNode, scene);
-
-    // Compute a single AABB for the entire model
     loadedModelAABB = computeAABB(aggregatedVertices);
 }
 
@@ -1216,18 +1268,30 @@ void storeMesh(const std::vector<Vertex>& vertices, const std::vector<unsigned i
     // Vertex Positions
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Position));
     glEnableVertexAttribArray(0);
+
     // Vertex Texture Coords
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoord));
     glEnableVertexAttribArray(1);
+
     // Vertex Normals
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
     glEnableVertexAttribArray(2);
+
     // Vertex Tangents
     glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Tangent));
     glEnableVertexAttribArray(3);
+
     // Vertex Bitangents
     glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Bitangent));
     glEnableVertexAttribArray(4);
+
+    // Bone IDs
+    glVertexAttribIPointer(5, 4, GL_INT, sizeof(Vertex), (void*)offsetof(Vertex, BoneIDs));
+    glEnableVertexAttribArray(5);
+
+    // Bone Weights
+    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Weights));
+    glEnableVertexAttribArray(6);
 
     glBindVertexArray(0);
 
@@ -1238,7 +1302,7 @@ void storeMesh(const std::vector<Vertex>& vertices, const std::vector<unsigned i
 void processNode(aiNode* node, const aiScene* scene) {
     for (unsigned int i = 0; i < node->mNumMeshes; i++) {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
-        processMesh(mesh, scene);
+        processMesh(mesh, scene, node->mTransformation);
     }
 
     for (unsigned int i = 0; i < node->mNumChildren; i++) {
@@ -1246,45 +1310,25 @@ void processNode(aiNode* node, const aiScene* scene) {
     }
 }
 
-void processMesh(aiMesh* mesh, const aiScene* scene) {
+void processMesh(aiMesh* mesh, const aiScene* scene, const aiMatrix4x4& nodeTransformation) {
     std::vector<Vertex> vertices;
     std::vector<unsigned int> indices;
 
+    // Process vertices
     for (unsigned int i = 0; i < mesh->mNumVertices; i++) {
         Vertex vertex;
-
-        // Extract and log position
-        vertex.Position = glm::vec3(mesh->mVertices[i].x, mesh->mVertices[i].y, mesh->mVertices[i].z);
-
-        // Check and handle normals
-        if (mesh->HasNormals()) {
-            vertex.Normal = glm::vec3(mesh->mNormals[i].x, mesh->mNormals[i].y, mesh->mNormals[i].z);
-        }
-        else {
-            vertex.Normal = glm::vec3(0.0f);
-        }
-
-        // Check and handle texture coordinates
-        if (mesh->mTextureCoords[0]) {
-            vertex.TexCoord = glm::vec2(mesh->mTextureCoords[0][i].x, mesh->mTextureCoords[0][i].y);
-        }
-        else {
-            vertex.TexCoord = glm::vec2(0.0f);
-        }
-
-        // Check and handle tangents and bitangents
-        if (mesh->HasTangentsAndBitangents()) {
-            vertex.Tangent = glm::vec3(mesh->mTangents[i].x, mesh->mTangents[i].y, mesh->mTangents[i].z);
-            vertex.Bitangent = glm::vec3(mesh->mBitangents[i].x, mesh->mBitangents[i].y, mesh->mBitangents[i].z);
-        }
-        else {
-            vertex.Tangent = glm::vec3(0.0f);
-            vertex.Bitangent = glm::vec3(0.0f);
-        }
-
+        aiVector3D transformedPosition = nodeTransformation * mesh->mVertices[i];
+        vertex.Position = glm::vec3(transformedPosition.x, transformedPosition.y, transformedPosition.z);
+        vertex.Normal = glm::vec3(mesh->mNormals[i].x, mesh->mNormals[i].y, mesh->mNormals[i].z);
+        vertex.TexCoord = mesh->mTextureCoords[0] ? glm::vec2(mesh->mTextureCoords[0][i].x, mesh->mTextureCoords[0][i].y) : glm::vec2(0.0f);
+        vertex.Tangent = glm::vec3(mesh->mTangents[i].x, mesh->mTangents[i].y, mesh->mTangents[i].z);
+        vertex.Bitangent = glm::vec3(mesh->mBitangents[i].x, mesh->mBitangents[i].y, mesh->mBitangents[i].z);
+        vertex.BoneIDs = glm::ivec4(0);
+        vertex.Weights = glm::vec4(0.0f);
         vertices.push_back(vertex);
     }
 
+    // Process indices
     for (unsigned int i = 0; i < mesh->mNumFaces; i++) {
         aiFace face = mesh->mFaces[i];
         for (unsigned int j = 0; j < face.mNumIndices; j++) {
@@ -1292,9 +1336,41 @@ void processMesh(aiMesh* mesh, const aiScene* scene) {
         }
     }
 
+    // Process bones
+    for (unsigned int i = 0; i < mesh->mNumBones; i++) {
+        aiBone* bone = mesh->mBones[i];
+        int boneIndex = 0;
+
+        if (boneMapping.find(bone->mName.C_Str()) == boneMapping.end()) {
+            boneIndex = numBones;
+            numBones++;
+            BoneInfo bi;
+            boneInfo.push_back(bi);
+            boneInfo[boneIndex].BoneOffset = glm::transpose(glm::make_mat4(&bone->mOffsetMatrix.a1));
+            boneMapping[bone->mName.C_Str()] = boneIndex;
+        }
+        else {
+            boneIndex = boneMapping[bone->mName.C_Str()];
+        }
+
+        for (unsigned int j = 0; j < bone->mNumWeights; j++) {
+            int vertexID = bone->mWeights[j].mVertexId;
+            float weight = bone->mWeights[j].mWeight;
+
+            for (int k = 0; k < 4; ++k) {
+                if (vertices[vertexID].Weights[k] == 0.0f) {
+                    vertices[vertexID].BoneIDs[k] = boneIndex;
+                    vertices[vertexID].Weights[k] = weight;
+                    break;
+                }
+            }
+        }
+    }
+
     // Aggregate vertices for AABB computation
     aggregatedVertices.insert(aggregatedVertices.end(), vertices.begin(), vertices.end());
 
+    // Store the processed mesh
     storeMesh(vertices, indices);
 }
 
@@ -1528,4 +1604,151 @@ void initializeSkybox()
     glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), &skyboxVertices, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+}
+
+unsigned int findScaling(float animationTime, const aiNodeAnim* nodeAnim) {
+    for (unsigned int i = 0; i < nodeAnim->mNumScalingKeys - 1; i++) {
+        if (animationTime < (float)nodeAnim->mScalingKeys[i + 1].mTime) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+unsigned int findRotation(float animationTime, const aiNodeAnim* nodeAnim) {
+    for (unsigned int i = 0; i < nodeAnim->mNumRotationKeys - 1; i++) {
+        if (animationTime < (float)nodeAnim->mRotationKeys[i + 1].mTime) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+unsigned int findPosition(float animationTime, const aiNodeAnim* nodeAnim) {
+    for (unsigned int i = 0; i < nodeAnim->mNumPositionKeys - 1; i++) {
+        if (animationTime < (float)nodeAnim->mPositionKeys[i + 1].mTime) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+void updateBoneTransforms(float timeInSeconds, const aiScene* scene) {
+    if (!scene || !scene->mAnimations || scene->mNumAnimations == 0) {
+        std::cerr << "ERROR::ASSIMP:: No animations found in the model." << std::endl;
+        return;
+    }
+
+    const aiAnimation* animation = scene->mAnimations[0];
+    float ticksPerSecond = animation->mTicksPerSecond != 0 ? animation->mTicksPerSecond : 25.0f;
+    float timeInTicks = timeInSeconds * ticksPerSecond;
+    float animationTime = fmod(timeInTicks, animation->mDuration);
+
+    glm::mat4 identity = glm::mat4(1.0f);
+    readNodeHierarchy(animationTime, scene->mRootNode, identity);
+
+    boneTransforms.resize(boneInfo.size());
+    for (unsigned int i = 0; i < boneInfo.size(); i++) {
+        boneTransforms[i] = boneInfo[i].FinalTransformation;
+    }
+}
+
+void readNodeHierarchy(float animationTime, const aiNode* node, const glm::mat4& parentTransform) {
+    std::string nodeName(node->mName.data);
+
+    const aiAnimation* animation = scene->mAnimations[0];
+    glm::mat4 nodeTransformation = glm::transpose(glm::make_mat4(&node->mTransformation.a1));
+
+    const aiNodeAnim* nodeAnim = findNodeAnim(animation, nodeName);
+
+    if (nodeAnim) {
+        aiVector3D scaling;
+        calcInterpolatedScaling(scaling, animationTime, nodeAnim);
+        glm::mat4 scalingM = glm::scale(glm::mat4(1.0f), glm::vec3(scaling.x, scaling.y, scaling.z));
+
+        aiQuaternion rotationQ;
+        calcInterpolatedRotation(rotationQ, animationTime, nodeAnim);
+        glm::mat4 rotationM = glm::mat4_cast(glm::quat(rotationQ.w, rotationQ.x, rotationQ.y, rotationQ.z));
+
+        aiVector3D translation;
+        calcInterpolatedPosition(translation, animationTime, nodeAnim);
+        glm::mat4 translationM = glm::translate(glm::mat4(1.0f), glm::vec3(translation.x, translation.y, translation.z));
+
+        nodeTransformation = translationM * rotationM * scalingM;
+    }
+
+    glm::mat4 globalTransformation = parentTransform * nodeTransformation;
+
+    if (boneMapping.find(nodeName) != boneMapping.end()) {
+        int boneIndex = boneMapping[nodeName];
+        boneInfo[boneIndex].FinalTransformation = globalTransformation * boneInfo[boneIndex].BoneOffset;
+    }
+
+    for (unsigned int i = 0; i < node->mNumChildren; i++) {
+        readNodeHierarchy(animationTime, node->mChildren[i], globalTransformation);
+    }
+}
+
+const aiNodeAnim* findNodeAnim(const aiAnimation* animation, const std::string nodeName) {
+    for (unsigned int i = 0; i < animation->mNumChannels; i++) {
+        const aiNodeAnim* nodeAnim = animation->mChannels[i];
+        if (std::string(nodeAnim->mNodeName.data) == nodeName) {
+            return nodeAnim;
+        }
+    }
+    return nullptr;
+}
+
+void calcInterpolatedScaling(aiVector3D& out, float animationTime, const aiNodeAnim* nodeAnim) {
+    if (nodeAnim->mNumScalingKeys == 1) {
+        out = nodeAnim->mScalingKeys[0].mValue;
+        return;
+    }
+
+    unsigned int scalingIndex = findScaling(animationTime, nodeAnim);
+    unsigned int nextScalingIndex = (scalingIndex + 1);
+    assert(nextScalingIndex < nodeAnim->mNumScalingKeys);
+    float deltaTime = (float)(nodeAnim->mScalingKeys[nextScalingIndex].mTime - nodeAnim->mScalingKeys[scalingIndex].mTime);
+    float factor = (animationTime - (float)nodeAnim->mScalingKeys[scalingIndex].mTime) / deltaTime;
+    assert(factor >= 0.0f && factor <= 1.0f);
+    const aiVector3D& start = nodeAnim->mScalingKeys[scalingIndex].mValue;
+    const aiVector3D& end = nodeAnim->mScalingKeys[nextScalingIndex].mValue;
+    aiVector3D delta = end - start;
+    out = start + factor * delta;
+}
+
+void calcInterpolatedRotation(aiQuaternion& out, float animationTime, const aiNodeAnim* nodeAnim) {
+    if (nodeAnim->mNumRotationKeys == 1) {
+        out = nodeAnim->mRotationKeys[0].mValue;
+        return;
+    }
+
+    unsigned int rotationIndex = findRotation(animationTime, nodeAnim);
+    unsigned int nextRotationIndex = (rotationIndex + 1);
+    assert(nextRotationIndex < nodeAnim->mNumRotationKeys);
+    float deltaTime = (float)(nodeAnim->mRotationKeys[nextRotationIndex].mTime - nodeAnim->mRotationKeys[rotationIndex].mTime);
+    float factor = (animationTime - (float)nodeAnim->mRotationKeys[rotationIndex].mTime) / deltaTime;
+    assert(factor >= 0.0f && factor <= 1.0f);
+    const aiQuaternion& startRotationQ = nodeAnim->mRotationKeys[rotationIndex].mValue;
+    const aiQuaternion& endRotationQ = nodeAnim->mRotationKeys[nextRotationIndex].mValue;
+    aiQuaternion::Interpolate(out, startRotationQ, endRotationQ, factor);
+    out = out.Normalize();
+}
+
+void calcInterpolatedPosition(aiVector3D& out, float animationTime, const aiNodeAnim* nodeAnim) {
+    if (nodeAnim->mNumPositionKeys == 1) {
+        out = nodeAnim->mPositionKeys[0].mValue;
+        return;
+    }
+
+    unsigned int positionIndex = findPosition(animationTime, nodeAnim);
+    unsigned int nextPositionIndex = (positionIndex + 1);
+    assert(nextPositionIndex < nodeAnim->mNumPositionKeys);
+    float deltaTime = (float)(nodeAnim->mPositionKeys[nextPositionIndex].mTime - nodeAnim->mPositionKeys[positionIndex].mTime);
+    float factor = (animationTime - (float)nodeAnim->mPositionKeys[positionIndex].mTime) / deltaTime;
+    assert(factor >= 0.0f && factor <= 1.0f);
+    const aiVector3D& start = nodeAnim->mPositionKeys[positionIndex].mValue;
+    const aiVector3D& end = nodeAnim->mPositionKeys[nextPositionIndex].mValue;
+    aiVector3D delta = end - start;
+    out = start + factor * delta;
 }
