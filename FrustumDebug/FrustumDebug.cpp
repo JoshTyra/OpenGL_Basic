@@ -252,7 +252,7 @@ int main() {
 
     waterCubeMapTexture = loadCubemap(waterFaces);
 
-    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/combat_sword_idle.fbx");
+    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/combat sword melee_strike_2.fbx");
     loadModel(staticModelPath);
 
     characterTexture = loadTexture(FileSystemUtils::getAssetFilePath("textures/masterchief_D.tga").c_str());
@@ -447,9 +447,9 @@ void renderScene(GLFWwindow* window) {
     glm::vec3 viewPos = camera.getPosition();
     glm::vec3 ambientColor = glm::vec3(0.25f, 0.25f, 0.25f);
     glm::vec3 diffuseColor = glm::vec3(1.0f, 1.0f, 1.0f);
-    glm::vec3 specularColor = glm::vec3(0.5f, 0.5f, 0.5f);
+    glm::vec3 specularColor = glm::vec3(0.4f, 0.4f, 0.4f);
     float shininess = 32.0f;
-    float lightIntensity = 1.0f;
+    float lightIntensity = 1.25f;
 
     glUniform3fv(glGetUniformLocation(characterShaderProgram, "lightDir"), 1, glm::value_ptr(lightDir));
     glUniform3fv(glGetUniformLocation(characterShaderProgram, "viewPos"), 1, glm::value_ptr(viewPos));
@@ -540,7 +540,7 @@ void render(GLFWwindow* window) {
     glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[0]);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glUseProgram(brightPassShaderProgram);
-    glUniform1f(glGetUniformLocation(brightPassShaderProgram, "brightnessThreshold"), 0.3f);
+    glUniform1f(glGetUniformLocation(brightPassShaderProgram, "brightnessThreshold"), 0.6f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, colorBuffers[0]);
     glUniform1i(glGetUniformLocation(brightPassShaderProgram, "hdrBuffer"), 0);
@@ -570,7 +570,7 @@ void render(GLFWwindow* window) {
     // 4. Render final quad with scene and bloom
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glUseProgram(finalCombineShaderProgram);
-    glUniform1f(glGetUniformLocation(finalCombineShaderProgram, "bloomIntensity"), 0.9f);
+    glUniform1f(glGetUniformLocation(finalCombineShaderProgram, "bloomIntensity"), 1.2f);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, colorBuffers[0]);
@@ -624,7 +624,7 @@ void initializeCubes() {
         }
     }
 
-    int characterGridSize = 10; // Adjust this value as desired
+    int characterGridSize = 1; // Adjust this value as desired
     float characterSpacing = 5.0f; // Adjust the spacing between characters
 
     for (int i = -characterGridSize; i <= characterGridSize; i++) {
@@ -783,9 +783,9 @@ void initializeShaders() {
     layout(location = 2) in vec3 aNormal;
     layout(location = 3) in vec3 aTangent;
     layout(location = 4) in vec3 aBitangent;
-    layout(location = 5) in ivec4 aBoneIDs; // Bone IDs
-    layout(location = 6) in vec4 aWeights;  // Bone weights
-    layout(location = 7) in vec3 aInstancePosition; // Instance position
+    layout(location = 5) in ivec4 aBoneIDs;
+    layout(location = 6) in vec4 aWeights;
+    layout(location = 7) in vec3 aInstancePosition;
 
     out vec2 TexCoord;
     out vec3 FragPos;
@@ -797,34 +797,35 @@ void initializeShaders() {
     uniform mat4 model;
     uniform mat4 view;
     uniform mat4 projection;
-    uniform mat4 boneTransforms[100]; // Assume a maximum of 100 bones
+    uniform mat4 boneTransforms[40];
 
     uniform vec3 lightDir;
     uniform vec3 viewPos;
 
     void main() {
-        // Calculate the bone transformation
         mat4 boneTransform = boneTransforms[aBoneIDs[0]] * aWeights[0];
         boneTransform += boneTransforms[aBoneIDs[1]] * aWeights[1];
         boneTransform += boneTransforms[aBoneIDs[2]] * aWeights[2];
         boneTransform += boneTransforms[aBoneIDs[3]] * aWeights[3];
 
-        // Apply the bone transformation and the instance position
         vec3 transformedPos = vec3(boneTransform * vec4(aPos, 1.0)) + aInstancePosition;
 
-        // Apply model, view, and projection transformations
-        gl_Position = projection * view * model * vec4(transformedPos, 1.0);
+        vec4 worldPos = model * vec4(transformedPos, 1.0);
+        gl_Position = projection * view * worldPos;
 
-        // Calculate the fragment position in world space
-        FragPos = vec3(model * vec4(transformedPos, 1.0));
+        FragPos = vec3(worldPos);
 
-        // Pass the texture coordinates to the fragment shader
         TexCoord = aTexCoord;
 
-        // Calculate the TBN matrix
+        // Transform the normal, tangent, and bitangent vectors using the bone transformations
+        mat3 boneTransformIT = transpose(inverse(mat3(boneTransform)));
+        vec3 transformedNormal = normalize(boneTransformIT * aNormal);
+        vec3 transformedTangent = normalize(boneTransformIT * aTangent);
+        vec3 transformedBitangent = normalize(boneTransformIT * aBitangent);
+
         mat3 normalMatrix = transpose(inverse(mat3(model)));
-        vec3 T = normalize(normalMatrix * aTangent);
-        vec3 N = normalize(normalMatrix * aNormal);
+        vec3 T = normalize(normalMatrix * transformedTangent);
+        vec3 N = normalize(normalMatrix * transformedNormal);
         T = normalize(T - dot(T, N) * N);
         vec3 B = cross(N, T);
 
@@ -833,11 +834,10 @@ void initializeShaders() {
         TangentViewPos = TBN * viewPos;
         TangentFragPos = TBN * FragPos;
 
-        // Calculate the reflection vector
         vec3 I = normalize(viewPos - FragPos);
         ReflectDir = reflect(I, N);
     }
-)";
+    )";
 
         const char* characterFragmentShaderSource = R"(
         #version 430 core
@@ -866,7 +866,7 @@ void initializeShaders() {
             vec3 normal = texture(texture_normal, TexCoord).rgb;
             normal = normal * 2.0f - 1.0f;
             normal.y = -normal.y;
-            normal = normalize(normal);  // Apply bump strength
+            normal = normalize(normal);
 
             vec4 diffuseTexture = texture(texture_diffuse, TexCoord);
             vec3 diffuseTexColor = diffuseTexture.rgb;
@@ -892,8 +892,8 @@ void initializeShaders() {
             vec3 specular = specularColor * spec * specularMask;
 
             float fresnelBias = 0.1f;
-            float fresnelScale = 0.5f;
-            float fresnelPower = 0.5f;
+            float fresnelScale = 1.0f;
+            float fresnelPower = 1.0f;
             vec3 I = normalize(TangentFragPos - TangentViewPos);
             float fresnel = fresnelBias + fresnelScale * pow(1.0f - dot(I, normal), fresnelPower);
             specular *= fresnel;
