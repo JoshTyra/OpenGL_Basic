@@ -294,9 +294,12 @@ void initializeOpenGL(GLFWwindow* window) {
     glEnable(GL_DEPTH_TEST);
 
     initializeShaders();
-    initializeCubes();
-    createWaterMesh(25.0f);
+
     initializeSkybox();
+
+    initializeCubes();
+
+    createWaterMesh(25.0f);
 
     glm::vec3 randomColor = getRandomColor();
     glUseProgram(characterShaderProgram);
@@ -374,6 +377,9 @@ void renderScene(GLFWwindow* window) {
     glBindVertexArray(0);
     glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
+
+    // Render water
+    renderWater();
 
     // Perform frustum culling on cubes
     std::vector<glm::vec3> visibleCubePositions;
@@ -516,9 +522,6 @@ void renderScene(GLFWwindow* window) {
             glDrawElementsInstanced(GL_TRIANGLES, mesh.indices.size(), GL_UNSIGNED_INT, 0, 1);
         }
     }
-
-    // Render water
-    renderWater();
 
     std::string windowTitle = "Frustum Culling - Visible Objects: " + std::to_string(visibleCharacterPositions.size());
     glfwSetWindowTitle(window, windowTitle.c_str());
@@ -714,7 +717,7 @@ void initializeCubes() {
 void initializeShaders() {
     // Cube shader
     const char* cubeVertexShaderSource = R"(
-    #version 330 core
+    #version 430 core
     layout(location = 0) in vec3 aPos;
     layout(location = 1) in vec3 aOffset;
     layout(location = 2) in vec2 aGridPosition;
@@ -737,7 +740,7 @@ void initializeShaders() {
     )";
 
     const char* cubeFragmentShaderSource = R"(
-    #version 330 core
+    #version 430 core
     out vec4 FragColor;
 
     in vec2 GridPosition;
@@ -839,73 +842,74 @@ void initializeShaders() {
     }
     )";
 
-        const char* characterFragmentShaderSource = R"(
-        #version 430 core
+    const char* characterFragmentShaderSource = R"(
+    #version 430 core
 
-        out vec4 FragColor;
+    out vec4 FragColor;
 
-        in vec2 TexCoord;
-        in vec3 TangentLightDir;
-        in vec3 TangentViewPos;
-        in vec3 TangentFragPos;
-        in vec3 ReflectDir;
+    in vec2 TexCoord;
+    in vec3 TangentLightDir;
+    in vec3 TangentViewPos;
+    in vec3 TangentFragPos;
+    in vec3 ReflectDir;
 
-        uniform vec3 ambientColor;
-        uniform vec3 diffuseColor;
-        uniform vec3 specularColor;
-        uniform float shininess;
+    uniform vec3 ambientColor;
+    uniform vec3 diffuseColor;
+    uniform vec3 specularColor;
+    uniform float shininess;
 
-        uniform sampler2D texture_diffuse;
-        uniform sampler2D texture_normal;
-        uniform sampler2D texture_mask;
-        uniform samplerCube cubemap;
-        uniform float lightIntensity;
-        uniform vec3 changeColor;
+    layout(binding = 0) uniform sampler2D texture_diffuse;
+    layout(binding = 1) uniform sampler2D texture_normal;
+    layout(binding = 2) uniform sampler2D texture_mask;
+    layout(binding = 3) uniform samplerCube cubemap;
 
-        void main() {
-            vec3 normal = texture(texture_normal, TexCoord).rgb;
-            normal = normal * 2.0f - 1.0f;
-            normal.y = -normal.y;
-            normal = normalize(normal);
+    uniform float lightIntensity;
+    uniform vec3 changeColor;
 
-            vec4 diffuseTexture = texture(texture_diffuse, TexCoord);
-            vec3 diffuseTexColor = diffuseTexture.rgb;
-            float alphaValue = diffuseTexture.a;
-            float blendFactor = 0.1f;
+    void main() {
+        vec3 normal = texture(texture_normal, TexCoord).rgb;
+        normal = normal * 2.0f - 1.0f;
+        normal.y = -normal.y;
+        normal = normalize(normal);
 
-            vec3 maskValue = texture(texture_mask, TexCoord).rgb;
-            vec3 blendedColor = mix(diffuseTexColor, diffuseTexColor * changeColor, maskValue);
+        vec4 diffuseTexture = texture(texture_diffuse, TexCoord);
+        vec3 diffuseTexColor = diffuseTexture.rgb;
+        float alphaValue = diffuseTexture.a;
+        float blendFactor = 0.1f;
 
-            vec3 alphaBlendedColor = mix(blendedColor, blendedColor * alphaValue, blendFactor);
+        vec3 maskValue = texture(texture_mask, TexCoord).rgb;
+        vec3 blendedColor = mix(diffuseTexColor, diffuseTexColor * changeColor, maskValue);
 
-            float specularMask = diffuseTexture.a;
+        vec3 alphaBlendedColor = mix(blendedColor, blendedColor * alphaValue, blendFactor);
 
-            vec3 ambient = ambientColor * alphaBlendedColor;
+        float specularMask = diffuseTexture.a;
 
-            vec3 lightDir = normalize(TangentLightDir);
-            float diff = max(dot(normal, lightDir), 0.0f) * lightIntensity;
-            vec3 diffuse = diffuseColor * diff * alphaBlendedColor;
+        vec3 ambient = ambientColor * alphaBlendedColor;
 
-            vec3 viewDir = normalize(TangentViewPos - TangentFragPos);
-            vec3 halfwayDir = normalize(lightDir + viewDir);
-            float spec = pow(max(dot(normal, halfwayDir), 0.0), shininess) * lightIntensity;
-            vec3 specular = specularColor * spec * specularMask;
+        vec3 lightDir = normalize(TangentLightDir);
+        float diff = max(dot(normal, lightDir), 0.0f) * lightIntensity;
+        vec3 diffuse = diffuseColor * diff * alphaBlendedColor;
 
-            float fresnelBias = 0.1f;
-            float fresnelScale = 0.75f;
-            float fresnelPower = 1.0f;
-            vec3 I = normalize(TangentFragPos - TangentViewPos);
-            float fresnel = fresnelBias + fresnelScale * pow(1.0f - dot(I, normal), fresnelPower);
-            specular *= fresnel;
+        vec3 viewDir = normalize(TangentViewPos - TangentFragPos);
+        vec3 halfwayDir = normalize(lightDir + viewDir);
+        float spec = pow(max(dot(normal, halfwayDir), 0.0), shininess) * lightIntensity;
+        vec3 specular = specularColor * spec * specularMask;
 
-            vec3 color = ambient + diffuse + specular;
+        float fresnelBias = 0.1f;
+        float fresnelScale = 0.75f;
+        float fresnelPower = 1.0f;
+        vec3 I = normalize(TangentFragPos - TangentViewPos);
+        float fresnel = fresnelBias + fresnelScale * pow(1.0f - dot(I, normal), fresnelPower);
+        specular *= fresnel;
 
-            vec3 reflectedColor = texture(cubemap, ReflectDir).rgb;
-            reflectedColor *= specularMask;
-            color = mix(color, reflectedColor, 0.15f);
+        vec3 color = ambient + diffuse + specular;
 
-            FragColor = vec4(color, 1.0f);
-        }
+        vec3 reflectedColor = texture(cubemap, ReflectDir).rgb;
+        reflectedColor *= specularMask;
+        color = mix(color, reflectedColor, 0.15f);
+
+        FragColor = vec4(color, 1.0f);
+    }
     )";
 
     // Compile and link character shader
@@ -927,7 +931,7 @@ void initializeShaders() {
 
     // Bright pass shader
     const char* brightPassVertexShaderSource = R"(
-    #version 330 core
+    #version 430 core
     layout (location = 0) in vec2 aPos;
     layout (location = 1) in vec2 aTexCoords;
 
@@ -940,11 +944,11 @@ void initializeShaders() {
     )";
 
     const char* brightPassFragmentShaderSource = R"(
-    #version 330 core
+    #version 430 core
     out vec4 FragColor;
     in vec2 TexCoords;
 
-    uniform sampler2D hdrBuffer;
+    layout(binding = 0) uniform sampler2D hdrBuffer;
     uniform float brightnessThreshold;
 
     void main() {
@@ -965,7 +969,7 @@ void initializeShaders() {
 
     // Blur shader
     const char* blurVertexShaderSource = R"(
-    #version 330 core
+    #version 430 core
     layout (location = 0) in vec2 aPos;
     layout (location = 1) in vec2 aTexCoords;
 
@@ -978,11 +982,11 @@ void initializeShaders() {
     )";
 
     const char* blurFragmentShaderSource = R"(
-    #version 330 core
+    #version 430 core
     out vec4 FragColor;
     in vec2 TexCoords;
 
-    uniform sampler2D image;
+    layout(binding = 0) uniform sampler2D image;
     uniform bool horizontal;
     uniform float weight[5];
     uniform float blurSpread; // New uniform to control blur spread
@@ -1011,7 +1015,7 @@ void initializeShaders() {
 
     // Final combine shader
     const char* finalCombineVertexShaderSource = R"(
-    #version 330 core
+    #version 430 core
     layout (location = 0) in vec2 aPos;
     layout (location = 1) in vec2 aTexCoords;
 
@@ -1029,8 +1033,8 @@ void initializeShaders() {
 
     in vec2 TexCoords;
 
-    uniform sampler2D scene;
-    uniform sampler2D bloomBlur;
+    layout(binding = 0) uniform sampler2D scene;
+    layout(binding = 1) uniform sampler2D bloomBlur;
     uniform float bloomIntensity; // Add bloom intensity uniform
 
     void main() {
@@ -1077,9 +1081,9 @@ void initializeShaders() {
     in vec3 fragNormal;
     in vec2 fragTexCoord;
     out vec4 fragColor;
-    uniform samplerCube skybox;
-    uniform sampler2D normalMap;
-    uniform sampler2D fresnelMap;
+    layout(binding = 0) uniform samplerCube skybox;
+    layout(binding = 1) uniform sampler2D normalMap;
+    layout(binding = 2) uniform sampler2D fresnelMap;
     uniform vec3 cameraPosition;
     uniform float waveStrength;
     uniform float refractionRatio;
@@ -1090,11 +1094,9 @@ void initializeShaders() {
         vec2 animatedTexCoord1 = fragTexCoord + vec2(time * 0.01, time * 0.02);
         vec2 animatedTexCoord2 = fragTexCoord + vec2(-time * 0.015, time * 0.025);
         vec3 normal1 = texture(normalMap, animatedTexCoord1).rgb;
-        vec3 normal2 = texture(normalMap, animatedTexCoord2).rgb;
         normal1 = normalize(normal1 * 2.0 - 1.0);
-        normal2 = normalize(normal2 * 2.0 - 1.0);
 
-        vec3 perturbedNormal = normalize(fragNormal + (normal1 + normal2) * waveStrength);
+        vec3 perturbedNormal = normalize(fragNormal + (normal1) * waveStrength);
 
         vec3 I = normalize(fragPosition - cameraPosition);
         float fresnelTerm = dot(I, perturbedNormal);
@@ -1170,7 +1172,8 @@ unsigned int compileShader(unsigned int type, const char* source) {
     if (!success) {
         char infoLog[512];
         glGetShaderInfoLog(shader, 512, nullptr, infoLog);
-        std::cerr << "ERROR::SHADER::COMPILATION_FAILED\n" << infoLog << std::endl;
+        std::string shaderType = (type == GL_VERTEX_SHADER) ? "VERTEX" : (type == GL_FRAGMENT_SHADER) ? "FRAGMENT" : "UNKNOWN";
+        std::cerr << "ERROR::SHADER::" << shaderType << "::COMPILATION_FAILED\n" << infoLog << std::endl;
     }
     return shader;
 }
@@ -1185,9 +1188,19 @@ unsigned int createShaderProgram(unsigned int vertexShader, unsigned int fragmen
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
         char infoLog[512];
-        glGetProgramInfoLog(program, 512, nullptr, infoLog);
+        glGetProgramInfoLog(program, 512, NULL, infoLog);
         std::cerr << "ERROR::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
     }
+
+    // Validate the program
+    glValidateProgram(program);
+    glGetProgramiv(program, GL_VALIDATE_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetProgramInfoLog(program, 512, NULL, infoLog);
+        std::cerr << "ERROR::PROGRAM::VALIDATION_FAILED\n" << infoLog << std::endl;
+    }
+
     return program;
 }
 
@@ -1210,8 +1223,9 @@ unsigned int loadTexture(const char* path) {
         glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
         glGenerateMipmap(GL_TEXTURE_2D);
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_LINEAR);
+        // Set texture parameters
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
@@ -1539,11 +1553,6 @@ void renderWater() {
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, fresnelTexture);
     glUniform1i(glGetUniformLocation(waterShaderProgram, "fresnelMap"), 2);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     // Bind VAO and draw water geometry
     glBindVertexArray(waterVAO);
