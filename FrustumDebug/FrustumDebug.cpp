@@ -188,22 +188,22 @@ glm::vec3 hexToRGB(const std::string& hex) {
 }
 
 std::vector<std::string> colorCodes = {
-    "#C13E3E", // Multiplayer Red
-    "#3639C9", // Multiplayer Blue
-    "#C9BA36", // Multiplayer Gold/Yellow
-    "#208A20", // Multiplayer Green
-    "#B53C8A", // Multiplayer Purple
-    "#DF9735", // Multiplayer Orange
-    "#744821", // Multiplayer Brown
-    "#EB7EC5", // Multiplayer Pink
-    "#D2D2D2", // Multiplayer White
+    //"#C13E3E", // Multiplayer Red
+    //"#3639C9", // Multiplayer Blue
+    //"#C9BA36", // Multiplayer Gold/Yellow
+    //"#208A20", // Multiplayer Green
+    //"#B53C8A", // Multiplayer Purple
+    //"#DF9735", // Multiplayer Orange
+    //"#744821", // Multiplayer Brown
+    //"#EB7EC5", // Multiplayer Pink
+    //"#D2D2D2", // Multiplayer White
     "#758550", // Campaign Color Lighter
-    "#55613A"  // Campaign Color Darker
-    "#000000", // Halo ce multiplayer black
-    "#707E71", // Halo ce multiplayer gray
-    "#01FFFF", // Halo ce multiplayer cyan
-    "#6493ED", // Halo ce multiplayer cobalt
-    "#C69C6C", // Halo ce multiplayer tan
+    //"#55613A"  // Campaign Color Darker
+    //"#000000", // Halo ce multiplayer black
+    //"#707E71", // Halo ce multiplayer gray
+    //"#01FFFF", // Halo ce multiplayer cyan
+    //"#6493ED", // Halo ce multiplayer cobalt
+    //"#C69C6C", // Halo ce multiplayer tan
 };
 
 glm::vec3 getRandomColor() {
@@ -252,7 +252,7 @@ int main() {
 
     waterCubeMapTexture = loadCubemap(waterFaces);
 
-    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/combat sword melee_strike_2.fbx");
+    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/combat_br_idle.fbx");
     loadModel(staticModelPath);
 
     characterTexture = loadTexture(FileSystemUtils::getAssetFilePath("textures/masterchief_D.tga").c_str());
@@ -445,7 +445,7 @@ void renderScene(GLFWwindow* window) {
 
     glm::vec3 lightDir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f));
     glm::vec3 viewPos = camera.getPosition();
-    glm::vec3 ambientColor = glm::vec3(0.25f, 0.25f, 0.25f);
+    glm::vec3 ambientColor = glm::vec3(0.3f, 0.3f, 0.3f);
     glm::vec3 diffuseColor = glm::vec3(1.0f, 1.0f, 1.0f);
     glm::vec3 specularColor = glm::vec3(0.4f, 0.4f, 0.4f);
     float shininess = 32.0f;
@@ -892,7 +892,7 @@ void initializeShaders() {
             vec3 specular = specularColor * spec * specularMask;
 
             float fresnelBias = 0.1f;
-            float fresnelScale = 1.0f;
+            float fresnelScale = 0.75f;
             float fresnelPower = 1.0f;
             vec3 I = normalize(TangentFragPos - TangentViewPos);
             float fresnel = fresnelBias + fresnelScale * pow(1.0f - dot(I, normal), fresnelPower);
@@ -902,7 +902,7 @@ void initializeShaders() {
 
             vec3 reflectedColor = texture(cubemap, ReflectDir).rgb;
             reflectedColor *= specularMask;
-            color = mix(color, reflectedColor, 0.2f);
+            color = mix(color, reflectedColor, 0.15f);
 
             FragColor = vec4(color, 1.0f);
         }
