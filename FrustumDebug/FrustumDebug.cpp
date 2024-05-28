@@ -34,15 +34,6 @@ Frustum frustum;
 glm::mat4 projectionMatrix;
 glm::mat4 viewMatrix;
 
-struct Cube {
-    glm::vec3 position;
-    float size;
-    glm::vec3 color;
-};
-
-std::vector<glm::vec3> cubePositions;
-std::vector<glm::vec2> cubeGridPositions;
-
 struct Vertex {
     glm::vec3 Position;
     glm::vec2 TexCoord;
@@ -53,17 +44,6 @@ struct Vertex {
     glm::vec4 Weights;
 };
 
-struct BoneInfo {
-    glm::mat4 BoneOffset;
-    glm::mat4 FinalTransformation;
-
-    BoneInfo() : BoneOffset(1.0f), FinalTransformation(1.0f) {}
-};
-
-std::map<std::string, int> boneMapping; // maps a bone name to its index
-std::vector<BoneInfo> boneInfo;
-int numBones = 0;
-std::vector<glm::mat4> boneTransforms;
 const aiScene* scene = nullptr;
 Assimp::Importer importer;
 
@@ -883,8 +863,6 @@ void processMesh(aiMesh* mesh, const aiScene* scene, const aiMatrix4x4& nodeTran
         vertex.TexCoord = mesh->mTextureCoords[0] ? glm::vec2(mesh->mTextureCoords[0][i].x, mesh->mTextureCoords[0][i].y) : glm::vec2(0.0f);
         vertex.Tangent = glm::vec3(mesh->mTangents[i].x, mesh->mTangents[i].y, mesh->mTangents[i].z);
         vertex.Bitangent = glm::vec3(mesh->mBitangents[i].x, mesh->mBitangents[i].y, mesh->mBitangents[i].z);
-        vertex.BoneIDs = glm::ivec4(0);
-        vertex.Weights = glm::vec4(0.0f);
         vertices.push_back(vertex);
     }
 
@@ -893,37 +871,6 @@ void processMesh(aiMesh* mesh, const aiScene* scene, const aiMatrix4x4& nodeTran
         aiFace face = mesh->mFaces[i];
         for (unsigned int j = 0; j < face.mNumIndices; j++) {
             indices.push_back(face.mIndices[j]);
-        }
-    }
-
-    // Process bones
-    for (unsigned int i = 0; i < mesh->mNumBones; i++) {
-        aiBone* bone = mesh->mBones[i];
-        int boneIndex = 0;
-
-        if (boneMapping.find(bone->mName.C_Str()) == boneMapping.end()) {
-            boneIndex = numBones;
-            numBones++;
-            BoneInfo bi;
-            boneInfo.push_back(bi);
-            boneInfo[boneIndex].BoneOffset = glm::transpose(glm::make_mat4(&bone->mOffsetMatrix.a1));
-            boneMapping[bone->mName.C_Str()] = boneIndex;
-        }
-        else {
-            boneIndex = boneMapping[bone->mName.C_Str()];
-        }
-
-        for (unsigned int j = 0; j < bone->mNumWeights; j++) {
-            int vertexID = bone->mWeights[j].mVertexId;
-            float weight = bone->mWeights[j].mWeight;
-
-            for (int k = 0; k < 4; ++k) {
-                if (vertices[vertexID].Weights[k] == 0.0f) {
-                    vertices[vertexID].BoneIDs[k] = boneIndex;
-                    vertices[vertexID].Weights[k] = weight;
-                    break;
-                }
-            }
         }
     }
 
