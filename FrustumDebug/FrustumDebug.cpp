@@ -203,7 +203,7 @@ std::vector<std::string> colorCodes = {
     "#707E71", // Halo ce multiplayer gray
     "#01FFFF", // Halo ce multiplayer cyan
     "#6493ED", // Halo ce multiplayer cobalt
-    "#C69C6C", // Halo ce multiplayer tan
+    "#C69C6C" // Halo ce multiplayer tan
 };
 
 glm::vec3 getRandomColor() {
@@ -252,7 +252,7 @@ int main() {
 
     waterCubeMapTexture = loadCubemap(waterFaces);
 
-    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/combat sword melee_strike_2.fbx");
+    std::string staticModelPath = FileSystemUtils::getAssetFilePath("models/combat_br_idle.fbx");
     loadModel(staticModelPath);
 
     characterTexture = loadTexture(FileSystemUtils::getAssetFilePath("textures/masterchief_D.tga").c_str());
